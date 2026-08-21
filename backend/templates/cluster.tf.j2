@@ -1,0 +1,44 @@
+terraform {
+  required_providers {
+    proxmox = {
+      source  = "Telmate/proxmox"
+      version = "2.9.14"
+    }
+  }
+}
+
+provider "proxmox" {
+  pm_api_url      = "https://{{ proxmox_api_ip }}:8006/api2/json"
+  pm_user         = "root@pam"
+  pm_tls_insecure = true
+}
+
+{% for vm in vms %}
+resource "proxmox_vm_qemu" "{{ vm.key }}" {
+  name        = "{{ vm.name }}"
+  target_node = "{{ vm.node }}"
+  clone       = "ubuntu-cloudinit-template"
+
+  cores   = {{ vm.cores }}
+  sockets = {{ vm.sockets }}
+  memory  = {{ vm.memory }}
+
+  disk {
+    size    = "{{ vm.disk }}G"
+    type    = "scsi"
+    storage = "local-lvm"
+  }
+
+  network {
+    model  = "virtio"
+    bridge = "vmbr0"
+  }
+
+  ipconfig0 = "ip={{ vm.full_ip }}/24,gw={{ subnet_prefix }}.1"
+  sshkeys   = <<EOF
+{% for key in ssh_keys %}
+{{ key }}
+{% endfor %}
+EOF
+}
+{% endfor %}

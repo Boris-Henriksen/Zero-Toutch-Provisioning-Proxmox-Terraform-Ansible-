@@ -1,0 +1,50 @@
+{
+  "proxmox_api_ip": "10.20.10.2",
+  "subnet_prefix": "10.20.10",
+  "vms": [
+    {
+      "key": "zabbix",
+      "name": "Zabbix",
+      "node": "proxmox-node1",
+      "cores": 2,
+      "sockets": 1,
+      "memory": 2048,
+      "disk": 20,
+      "ip_host": "101",
+      "full_ip": "10.20.10.101"
+    },
+    {
+      "key": "ipam",
+      "name": "IPAM",
+      "node": "proxmox-node1",
+      "cores": 2,
+      "sockets": 1,
+      "memory": 2048,
+      "disk": 20,
+      "ip_host": "102",
+      "full_ip": "10.20.10.102"
+    },
+    {
+      "key": "nginx",
+      "name": "Nginx",
+      "node": "proxmox-node1",
+      "cores": 2,
+      "sockets": 1,
+      "memory": 2048,
+      "disk": 20,
+      "ip_host": "103",
+      "full_ip": "10.20.10.103"
+    },
+    {
+      "key": "bind9",
+      "name": "Bind9",
+      "node": "proxmox-node1",
+      "cores": 2,
+      "sockets": 1,
+      "memory": 2048,
+      "disk": 20,
+      "ip_host": "104",
+      "full_ip": "10.20.10.104"
+    }
+  ]
+}
