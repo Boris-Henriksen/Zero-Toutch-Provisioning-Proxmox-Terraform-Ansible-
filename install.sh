@@ -19,6 +19,7 @@ fi
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$REPO_DIR/backend"
 FRONTEND_DIR="$REPO_DIR/frontend"
+FRONTEND_DEPLOY_DIR="/var/www/portal"
 STORAGE_DIR="$REPO_DIR/storage"
 VENV_DIR="$REPO_DIR/venv"
 SERVICE_NAME="portal-backend"
@@ -55,6 +56,14 @@ else
     npm install --prefix "$FRONTEND_DIR"
 fi
 npm run build --prefix "$FRONTEND_DIR"
+
+echo "==>     Installerer frontend i ${FRONTEND_DEPLOY_DIR}..."
+rm -rf "$FRONTEND_DEPLOY_DIR"
+install -d -o root -g www-data -m 0755 "$FRONTEND_DEPLOY_DIR"
+cp -a "$FRONTEND_DIR/dist/." "$FRONTEND_DEPLOY_DIR/"
+chown -R root:www-data "$FRONTEND_DEPLOY_DIR"
+find "$FRONTEND_DEPLOY_DIR" -type d -exec chmod 0755 {} +
+find "$FRONTEND_DEPLOY_DIR" -type f -exec chmod 0644 {} +
 
 echo "==> [4/8] Opretter storage-mapper og PXE-boot filer..."
 mkdir -p "$STORAGE_DIR/isos" "$STORAGE_DIR/extracted" "$STORAGE_DIR/discovery" "$STORAGE_DIR/tftpboot"
@@ -113,7 +122,7 @@ server {
     listen [::]:80 default_server;
     server_name _;
 
-    root ${FRONTEND_DIR}/dist;
+    root ${FRONTEND_DEPLOY_DIR};
     index index.html;
 
     location / {
