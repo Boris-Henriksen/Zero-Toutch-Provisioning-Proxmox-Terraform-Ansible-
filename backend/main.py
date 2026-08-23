@@ -185,7 +185,11 @@ def start_baremetal_provisioning(data: Step1Data):
         conf_lines.extend([
             "\nenable-tftp",
             f"tftp-root={TFTP_DIR}",
-            "dhcp-boot=ipxe.efi"
+            # Undgå boot-loop: klienter der allerede kører iPXE (identificeret via DHCP user-class)
+            # skal videre til autoexec.ipxe i stedet for at hente ipxe.efi igen.
+            "dhcp-userclass=set:ipxe,iPXE",
+            "dhcp-boot=tag:ipxe,autoexec.ipxe",
+            "dhcp-boot=tag:!ipxe,ipxe.efi"
         ])
 
         os.makedirs("/tmp/portal_pxe", exist_ok=True)
