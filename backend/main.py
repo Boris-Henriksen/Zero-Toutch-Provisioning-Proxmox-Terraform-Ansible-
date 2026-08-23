@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional
 import json
 import os
+import re
 import subprocess
 
 # 1. Opret FastAPI app
@@ -38,6 +39,25 @@ def normalize_mac(mac: str) -> str:
     if len(compact_mac) != 12 or any(character not in "0123456789abcdef" for character in compact_mac):
         raise ValueError(f"Ugyldig MAC-adresse: {mac}")
     return ":".join(compact_mac[index:index + 2] for index in range(0, 12, 2))
+
+
+def subnet_prefix_from_gateway(gateway: str) -> str:
+    octets = gateway.strip().split(".")
+    if len(octets) != 4 or not all(octet.isdigit() for octet in octets):
+        raise ValueError(f"Ugyldig gateway-IP: {gateway}")
+    return ".".join(octets[:3])
+
+
+def detect_interface_subnet_prefix(interface: str) -> str:
+    """Læser den faktisk konfigurerede IPv4 på NIC'et, så DHCP-poolen matcher det rigtige netværk."""
+    result = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", interface], capture_output=True, text=True, check=False)
+    match = re.search(r"inet (\d+\.\d+\.\d+)\.\d+/(\d+)", result.stdout)
+    if not match:
+        raise HTTPException(status_code=400, detail=f"Kunne ikke finde en IPv4-adresse på interface '{interface}'. Er kablet sat i, og er interfacet korrekt?")
+    prefix, prefix_len = match.group(1), match.group(2)
+    if prefix_len != "24":
+        raise HTTPException(status_code=400, detail=f"Interface '{interface}' har et /{prefix_len}-netværk. Kun /24 understøttes i øjeblikket.")
+    return prefix
 
 
 # --- ISO Endpoint ---
@@ -147,15 +167,19 @@ def start_baremetal_provisioning(data: Step1Data):
         if dnsmasq_process and dnsmasq_process.poll() is None:
             dnsmasq_process.terminate()
 
+        subnet_prefix = detect_interface_subnet_prefix(data.interface)
+
         conf_lines = [
             f"interface={data.interface}",
             "bind-interfaces",
-            "dhcp-range=10.20.10.200,10.20.10.250,255.255.255.0,1h",
+            f"dhcp-range={subnet_prefix}.200,{subnet_prefix}.250,255.255.255.0,1h",
             "dhcp-ignore=tag:!known\n"
         ]
 
-        for node in data.nodes:
+        for index, node in enumerate(data.nodes):
             node.mac_address = normalize_mac(node.mac_address)
+            if is_discovery:
+                node.ip = f"{subnet_prefix}.{200 + index}"
             conf_lines.append(f"dhcp-host={node.mac_address},{node.hostname},{node.ip},set:known")
 
         conf_lines.extend([

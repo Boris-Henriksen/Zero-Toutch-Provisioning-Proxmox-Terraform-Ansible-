@@ -351,7 +351,7 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
       nodes.push({
         hostname: "discovery-temp",
         mac_address: mac,
-        ip: "10.20.10.200", // Dynamisk DHCP IP under discovery
+        ip: "0.0.0.0", // Backend udleder og overskriver denne ud fra NIC'ets faktiske subnet
         disk: "sda"
       });
     }
