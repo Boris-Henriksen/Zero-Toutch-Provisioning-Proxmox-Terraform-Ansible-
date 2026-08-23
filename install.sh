@@ -72,7 +72,6 @@ install -m 0644 /usr/lib/ipxe/snponly.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
 
 cat << 'EOF' > "$STORAGE_DIR/tftpboot/autoexec.ipxe"
 #!ipxe
-dhcp || shell
 chain http://${next-server}:8000/auto-installer.ipxe
 EOF
 
