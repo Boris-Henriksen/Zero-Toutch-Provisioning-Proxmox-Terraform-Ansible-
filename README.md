@@ -3,9 +3,8 @@
 FastAPI-backend + Vite-frontend til zero-touch bare-metal provisioning (PXE/dnsmasq)
 af Proxmox-noder, samt generering af Terraform/Ansible-config til VM'er.
 
-Kun kildekoden ligger i dette repository. Alle binære/genererede filer (Python venv,
-node_modules, ISO'er, udpakkede boot-images, ipxe.efi m.m.) hentes eller bygges af
-`install.sh` ved installation - se `.gitignore`.
+Kun kildekoden ligger i dette repository. ISO'er og genererede boot-images ligger
+ikke i Git - se `.gitignore`. De skal tilføjes eller genereres på hver ny maskine.
 
 ## Installation på en ny maskine (Debian/Ubuntu, arm64 eller amd64)
 
@@ -33,12 +32,16 @@ Efter installation er portalen tilgængelig på `http://<server-ip>/`.
 
 ## Efter installation
 
-- Læg Proxmox ISO-filer i `storage/isos/` (de bliver automatisk listet i UI'et).
-- Generér discovery boot-image (bruges til hardware-scan af nye noder):
+- Kopiér en Proxmox ISO til `storage/isos/` (den bliver automatisk listet i UI'et).
+- Hent en Ubuntu Server **amd64/x86-64** live ISO, og generér discovery boot-image
+   (bruges til hardware-scan af nye noder):
 
   ```bash
   sudo ./scripts/prepare-discovery-image.sh /sti/til/ubuntu-live-server-amd64.iso
   ```
+
+   ARM64 ISO'er kan ikke bruges til de x86-64 bare-metal-servere og bliver afvist
+   af scriptet.
 
 ## Nyttige kommandoer
 

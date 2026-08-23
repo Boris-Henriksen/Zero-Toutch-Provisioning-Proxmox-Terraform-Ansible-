@@ -117,6 +117,11 @@ def start_baremetal_provisioning(data: Step1Data):
         if is_discovery:
             if not (DISCOVERY_DIR / "vmlinuz").exists() or not (DISCOVERY_DIR / "initrd").exists():
                 raise HTTPException(status_code=400, detail="Discovery-image mangler: kør prepare-discovery-image.sh først.")
+            kernel_description = subprocess.run(
+                ["file", str(DISCOVERY_DIR / "vmlinuz")], capture_output=True, text=True, check=False
+            ).stdout.lower()
+            if not any(architecture in kernel_description for architecture in ("x86-64", "x86_64", "amd64")):
+                raise HTTPException(status_code=400, detail="Discovery-image er ikke amd64/x86-64. Brug en Ubuntu Server amd64 ISO.")
         else:
             iso_path = ISO_DIR / data.selected_iso
             if not iso_path.exists():

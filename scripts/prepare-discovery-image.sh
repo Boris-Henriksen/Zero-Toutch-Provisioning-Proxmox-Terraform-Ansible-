@@ -44,6 +44,11 @@ if [[ ! -f "$MOUNT_POINT/casper/vmlinuz" || ! -f "$MOUNT_POINT/casper/initrd" ]]
     exit 1
 fi
 
+if ! file "$MOUNT_POINT/casper/vmlinuz" | grep -Eqi 'x86-64|x86_64|amd64'; then
+    echo "Fejl: Discovery-image skal være amd64/x86-64. Den valgte ISO indeholder ikke en x86-64 kernel." >&2
+    exit 1
+fi
+
 echo "==> Kopierer casper/vmlinuz og casper/initrd til $DISCOVERY_DIR ..."
 cp "$MOUNT_POINT/casper/vmlinuz" "$DISCOVERY_DIR/vmlinuz"
 cp "$MOUNT_POINT/casper/initrd" "$DISCOVERY_DIR/initrd"
