@@ -53,11 +53,30 @@ def detect_interface_network(interface: str, required_leases: int) -> tuple[str,
     first_host = int(network.network_address) + 1
     last_host = int(network.broadcast_address) - 1
     server_address = int(network_interface.ip)
-    lower_range = (first_host, server_address - 1)
-    upper_range = (server_address + 1, last_host)
-    pool_start, pool_end = max((lower_range, upper_range), key=lambda address_range: address_range[1] - address_range[0])
+    default_route = subprocess.run(
+        ["ip", "route", "show", "default", "dev", interface], capture_output=True, text=True, check=False
+    ).stdout
+    gateway_match = re.search(r"via (\d+\.\d+\.\d+\.\d+)", default_route)
+    reserved_addresses = {server_address}
+    if gateway_match:
+        reserved_addresses.add(int(ipaddress.IPv4Address(gateway_match.group(1))))
 
-    if pool_end - pool_start + 1 < required_leases:
+    pool_candidates = []
+    candidate_start = None
+    for address in range(first_host, last_host + 2):
+        if address <= last_host and address not in reserved_addresses:
+            candidate_start = address if candidate_start is None else candidate_start
+            continue
+        if candidate_start is not None:
+            pool_candidates.append((candidate_start, address - 1))
+            candidate_start = None
+
+    pool_candidates.sort(key=lambda candidate: (candidate[0] <= server_address, -candidate[1] + candidate[0]))
+    pool_start, pool_end = next(
+        (candidate for candidate in pool_candidates if candidate[1] - candidate[0] + 1 >= required_leases),
+        (None, None),
+    )
+    if pool_start is None:
         raise HTTPException(status_code=400, detail=f"Interface '{interface}' har ikke nok ledige IPv4-adresser til DHCP.")
 
     return (
