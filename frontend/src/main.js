@@ -33,28 +33,28 @@ document.querySelector('#app').innerHTML = `
         Indtast godkendte MAC-adresser. Boot maskinerne til <b>Discovery</b>. Når diskene er fundet, låses Hostname, IP og Disk-valg op.
       </p>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+      <div id="bm-general-settings" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; opacity: 0.55;">
         <div>
           <label><b>Vælg Proxmox ISO Version:</b></label><br>
-          <select id="bm-iso-version" style="padding: 6px; width: 95%;">
+          <select id="bm-iso-version" disabled style="padding: 6px; width: 95%;">
             <option value="">Indlæser ISO-filer...</option>
           </select>
         </div>
         <div>
           <label><b>Automations Netværkskort:</b></label><br>
-          <input type="text" id="bm-interface" placeholder="f.eks. enp1s0" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-interface" placeholder="Automatisk valgt ved Discovery" disabled style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>Gateway IP:</b></label><br>
-          <input type="text" id="bm-gateway" placeholder="f.eks. 10.20.10.1" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-gateway" placeholder="f.eks. 10.20.10.1" disabled style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>DNS IP:</b></label><br>
-          <input type="text" id="bm-dns" placeholder="f.eks. 10.20.10.1" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-dns" placeholder="f.eks. 10.20.10.1" disabled style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>Proxmox Root Password:</b></label><br>
-          <input type="password" id="bm-password" placeholder="Indtast root password" style="padding: 6px; width: 90%;">
+          <input type="password" id="bm-password" placeholder="Indtast root password" disabled style="padding: 6px; width: 90%;">
         </div>
       </div>
 
@@ -73,7 +73,7 @@ document.querySelector('#app').innerHTML = `
         <button id="btn-start-discovery" style="padding: 10px 20px; background: #17a2b8; color: white; border: none; cursor: pointer; font-weight: bold;">
           1. Start Discovery Mode (Hent Diske)
         </button>
-        <button id="btn-start-pxe" style="padding: 10px 20px; background: #28a745; color: white; border: none; cursor: pointer; font-weight: bold;">
+        <button id="btn-start-pxe" disabled style="padding: 10px 20px; background: #28a745; color: white; border: none; cursor: pointer; font-weight: bold;">
           2. Start Proxmox Auto-Installation
         </button>
         <button id="btn-stop-pxe" style="padding: 10px 20px; background: #dc3545; color: white; border: none; cursor: pointer;">
@@ -259,6 +259,28 @@ function renderNodeRows(count) {
       addOsdDropdown(idx);
     });
   });
+
+  updateProvisioningGate();
+}
+
+function updateProvisioningGate() {
+  const cards = Array.from(document.querySelectorAll('.node-card'));
+  const allDiscovered = cards.length > 0 && cards.every(card => card.dataset.discovered === 'true');
+  const generalSettings = document.getElementById('bm-general-settings');
+
+  generalSettings.style.opacity = allDiscovered ? '1' : '0.55';
+  generalSettings.querySelectorAll('input, select').forEach(input => {
+    input.disabled = !allDiscovered;
+  });
+  document.getElementById('btn-start-pxe').disabled = !allDiscovered;
+
+  cards.forEach(card => {
+    const enabled = allDiscovered && card.dataset.discovered === 'true';
+    card.querySelector('.config-section').style.opacity = enabled ? '1' : '0.6';
+    card.querySelectorAll('.bm-node-host, .bm-node-ip, .bm-node-disk, .bm-ceph-toggle').forEach(input => {
+      input.disabled = !enabled;
+    });
+  });
 }
 
 // Hjælpefunktion til at tilføje OSD Dropdown
@@ -307,13 +329,7 @@ async function checkDiscoveredDisks() {
         statusBadge.innerText = `Klar til install (${matchingNode.discovered_disks.length} diske fundet)`;
         statusBadge.style.background = '#d4edda';
         statusBadge.style.color = '#155724';
-        configSection.style.opacity = '1.0';
-
-        // LÅS ALT OP NÅR DISKE ER FUNDET
-        hostInput.disabled = false;
-        ipInput.disabled = false;
-        osSelect.disabled = false;
-        cephToggle.disabled = false;
+        card.dataset.discovered = 'true';
 
         const currentOsVal = osSelect.value;
 
@@ -334,6 +350,7 @@ async function checkDiscoveredDisks() {
         }
       }
     });
+    updateProvisioningGate();
   } catch (e) {
     // Stille fejlhåndtering
   }
@@ -363,7 +380,7 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
   }
 
   const payload = {
-    interface: document.getElementById('bm-interface').value,
+    interface: document.getElementById('bm-interface').value.trim() || null,
     gateway: document.getElementById('bm-gateway').value,
     dns: document.getElementById('bm-dns').value,
     root_password: document.getElementById('bm-password').value,
@@ -379,6 +396,12 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
 
   const data = await res.json();
   if (!res.ok) {
+    if (data.detail && data.detail.includes('PXE-interface')) {
+      const interfaceInput = document.getElementById('bm-interface');
+      interfaceInput.disabled = false;
+      interfaceInput.placeholder = 'Angiv PXE-interface, f.eks. enp1s0';
+      document.getElementById('bm-general-settings').style.opacity = '1';
+    }
     alert(data.detail || data.message || "Discovery PXE kunne ikke startes.");
     return;
   }

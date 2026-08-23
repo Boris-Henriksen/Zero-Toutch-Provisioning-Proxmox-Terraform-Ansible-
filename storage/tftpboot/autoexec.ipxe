@@ -1,4 +1,2 @@
 #!ipxe
-dhcp
 chain http://${next-server}:8000/auto-installer.ipxe
-EOF

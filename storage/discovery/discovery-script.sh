@@ -1,23 +1,36 @@
-cat << 'EOF' > ~/portal/storage/discovery/discovery-script.sh
-#!/bin/bash
+#!/usr/bin/env bash
+set -eu
 
-# Hent MAC-adresse fra primære netværkskort
-MAC=$(ip link show | grep "link/ether" | head -n 1 | awk '{print $2}')
+PORTAL_URL=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^portal.server=//p' | head -n 1)
+if [[ -z "$PORTAL_URL" ]]; then
+     exit 1
+fi
 
-# Find automations-PC IP ud fra gateway / DHCP server
-SERVER_IP=$(ip route show default | awk '{print $3}')
+PORTAL_HOST=${PORTAL_URL#http://}
+PORTAL_HOST=${PORTAL_HOST%%/*}
+INTERFACE=$(ip route get "$PORTAL_HOST" | awk '{for (index = 1; index <= NF; index++) if ($index == "dev") {print $(index + 1); exit}}')
+MAC=$(cat "/sys/class/net/${INTERFACE}/address")
 
-# Indsaml disk-informationer via lsblk i JSON format
-DISKS_JSON=$(lsblk -b -d -J -o NAME,SIZE,MODEL | jq '[.blockdevices[] | select(.type=="disk") | {name: .name, size: (.size | tonumber / 1073741824 | floor | tostring + "G"), model: (.model // "Generic Disk")}]')
+DISKS_JSON=$(python3 - <<'PY'
+import json
+import subprocess
 
-# Send POST request tilbage til FastAPI backend
-curl -X POST "http://${SERVER_IP}:8000/api/baremetal/report-disks/${MAC}" \
+devices = json.loads(subprocess.check_output(["lsblk", "-b", "-d", "-J", "-o", "NAME,SIZE,MODEL,TYPE"], text=True))["blockdevices"]
+disks = [
+     {
+          "name": device["name"],
+          "size": f"{int(device['size']) // 1073741824}G",
+          "model": (device.get("model") or "Generic Disk").strip(),
+     }
+     for device in devices
+     if device.get("type") == "disk"
+]
+print(json.dumps(disks))
+PY
+)
+
+curl --fail --silent --show-error -X POST "${PORTAL_URL}/api/baremetal/report-disks/${MAC}" \
      -H "Content-Type: application/json" \
      -d "$DISKS_JSON"
 
-# Genstart/sluk maskinen efter rapportering
-sleep 2
 poweroff -f
-EOF
-
-chmod +x ~/portal/storage/discovery/discovery-script.sh

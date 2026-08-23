@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from jinja2 import Environment, FileSystemLoader
 from pathlib import Path
 from typing import List, Optional
+import ipaddress
 import json
 import os
 import re
@@ -41,23 +42,41 @@ def normalize_mac(mac: str) -> str:
     return ":".join(compact_mac[index:index + 2] for index in range(0, 12, 2))
 
 
-def subnet_prefix_from_gateway(gateway: str) -> str:
-    octets = gateway.strip().split(".")
-    if len(octets) != 4 or not all(octet.isdigit() for octet in octets):
-        raise ValueError(f"Ugyldig gateway-IP: {gateway}")
-    return ".".join(octets[:3])
-
-
-def detect_interface_subnet_prefix(interface: str) -> str:
-    """Læser den faktisk konfigurerede IPv4 på NIC'et, så DHCP-poolen matcher det rigtige netværk."""
+def detect_interface_network(interface: str, required_leases: int) -> tuple[str, str, str, str, int]:
+    """Returns the local address, netmask, DHCP range, and prefix of the PXE NIC."""
     result = subprocess.run(["ip", "-o", "-4", "addr", "show", "dev", interface], capture_output=True, text=True, check=False)
-    match = re.search(r"inet (\d+\.\d+\.\d+)\.\d+/(\d+)", result.stdout)
+    match = re.search(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", result.stdout)
     if not match:
         raise HTTPException(status_code=400, detail=f"Kunne ikke finde en IPv4-adresse på interface '{interface}'. Er kablet sat i, og er interfacet korrekt?")
-    prefix, prefix_len = match.group(1), match.group(2)
-    if prefix_len != "24":
-        raise HTTPException(status_code=400, detail=f"Interface '{interface}' har et /{prefix_len}-netværk. Kun /24 understøttes i øjeblikket.")
-    return prefix
+    network_interface = ipaddress.IPv4Interface(match.group(1))
+    network = network_interface.network
+    first_host = int(network.network_address) + 1
+    last_host = int(network.broadcast_address) - 1
+    server_address = int(network_interface.ip)
+    lower_range = (first_host, server_address - 1)
+    upper_range = (server_address + 1, last_host)
+    pool_start, pool_end = max((lower_range, upper_range), key=lambda address_range: address_range[1] - address_range[0])
+
+    if pool_end - pool_start + 1 < required_leases:
+        raise HTTPException(status_code=400, detail=f"Interface '{interface}' har ikke nok ledige IPv4-adresser til DHCP.")
+
+    return (
+        str(network_interface.ip),
+        str(network.netmask),
+        str(ipaddress.IPv4Address(pool_start)),
+        str(ipaddress.IPv4Address(pool_end)),
+        network.prefixlen,
+    )
+
+
+def resolve_pxe_interface(interface: Optional[str]) -> str:
+    if interface:
+        return interface
+    result = subprocess.run(["ip", "-o", "-4", "addr", "show", "scope", "global", "up"], capture_output=True, text=True, check=False)
+    interfaces = list(dict.fromkeys(re.findall(r"^\d+:\s+([^\s:]+)", result.stdout, re.MULTILINE)))
+    if len(interfaces) != 1:
+        raise HTTPException(status_code=400, detail="Kunne ikke vælge PXE-interface automatisk. Angiv præcis ét aktivt IPv4-interface.")
+    return interfaces[0]
 
 
 # --- ISO Endpoint ---
@@ -83,7 +102,7 @@ class BareMetalNode(BaseModel):
     discovered_disks: List[DisksInfo] = []
 
 class Step1Data(BaseModel):
-    interface: str = "eth0"
+    interface: Optional[str] = None
     gateway: str
     dns: str
     root_password: str
@@ -133,6 +152,7 @@ def get_current_nodes():
 def start_baremetal_provisioning(data: Step1Data):
     global dnsmasq_process, active_proxmox_version
     try:
+        data.interface = resolve_pxe_interface(data.interface)
         is_discovery = data.selected_iso == "discovery.iso"
         if is_discovery:
             if not (DISCOVERY_DIR / "vmlinuz").exists() or not (DISCOVERY_DIR / "initrd").exists():
@@ -167,28 +187,28 @@ def start_baremetal_provisioning(data: Step1Data):
         if dnsmasq_process and dnsmasq_process.poll() is None:
             dnsmasq_process.terminate()
 
-        subnet_prefix = detect_interface_subnet_prefix(data.interface)
+        server_address, netmask, pool_start, pool_end, prefix_len = detect_interface_network(data.interface, len(data.nodes))
 
         conf_lines = [
             f"interface={data.interface}",
             "bind-interfaces",
-            f"dhcp-range={subnet_prefix}.200,{subnet_prefix}.250,255.255.255.0,1h",
+            f"dhcp-range={pool_start},{pool_end},{netmask},1h",
             "dhcp-ignore=tag:!known\n"
         ]
 
         for index, node in enumerate(data.nodes):
             node.mac_address = normalize_mac(node.mac_address)
             if is_discovery:
-                node.ip = f"{subnet_prefix}.{200 + index}"
+                node.ip = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(pool_start)) + index))
             conf_lines.append(f"dhcp-host={node.mac_address},{node.hostname},{node.ip},set:known")
 
         conf_lines.extend([
             "\nenable-tftp",
             f"tftp-root={TFTP_DIR}",
             # Undgå boot-loop: klienter der allerede kører iPXE (identificeret via DHCP user-class)
-            # skal videre til autoexec.ipxe i stedet for at hente ipxe.efi igen.
+            # henter scriptet direkte over lokal HTTP og prøver derfor ikke net0 igen.
             "dhcp-userclass=set:ipxe,iPXE",
-            "dhcp-boot=tag:ipxe,autoexec.ipxe",
+            f"dhcp-boot=tag:ipxe,http://{server_address}:8000/auto-installer.ipxe",
             "dhcp-boot=tag:!ipxe,ipxe.efi"
         ])
 
@@ -196,8 +216,10 @@ def start_baremetal_provisioning(data: Step1Data):
         with open("/tmp/portal_pxe/dnsmasq.conf", "w") as f:
             f.write("\n".join(conf_lines))
 
+        session_data = data.model_dump()
+        session_data["network_prefix_length"] = prefix_len
         with open("/tmp/portal_pxe/nodes.json", "w") as f:
-            f.write(data.model_dump_json())
+            json.dump(session_data, f)
 
         dnsmasq_process = subprocess.Popen(
             ["sudo", "dnsmasq", "-C", "/tmp/portal_pxe/dnsmasq.conf", "-d"],
@@ -224,13 +246,15 @@ def stop_baremetal():
 @app.get("/auto-installer.ipxe")
 def get_ipxe_script(request: Request):
     global active_proxmox_version
-    host = request.headers.get("host", "10.20.10.2").split(":")[0]
+    host = request.headers.get("host", "").split(":")[0]
+    if not host:
+        raise HTTPException(status_code=400, detail="Mangler Host-header til iPXE-scriptet.")
 
     # Hvis "1. Start Discovery Mode" er valgt
     if active_proxmox_version == "discovery":
         ipxe_script = f"""#!ipxe
 
-kernel http://{host}/proxmox/discovery/vmlinuz initrd=initrd ip=dhcp cloud-config-url=/dev/null ds=nocloud systemd.run="curl -s http://{host}/proxmox/discovery/discovery-script.sh | bash" quiet
+kernel http://{host}/proxmox/discovery/vmlinuz initrd=initrd ip=dhcp cloud-config-url=/dev/null ds=nocloud portal.server=http://{host} systemd.run="curl -fsSL http://{host}/proxmox/discovery/discovery-script.sh | bash" quiet
 initrd http://{host}/proxmox/discovery/initrd
 boot
 """
@@ -267,7 +291,7 @@ mailto = "admin@example.com"
 
 [network]
 source = "from-answer"
-cidr = "{target_node['ip']}/24"
+cidr = "{target_node['ip']}/{data['network_prefix_length']}"
 gateway = "{data['gateway']}"
 dns = "{data['dns']}"
 
