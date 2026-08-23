@@ -33,6 +33,13 @@ active_proxmox_version = None
 dnsmasq_process = None
 
 
+def normalize_mac(mac: str) -> str:
+    compact_mac = mac.strip().lower().replace(":", "").replace("-", "")
+    if len(compact_mac) != 12 or any(character not in "0123456789abcdef" for character in compact_mac):
+        raise ValueError(f"Ugyldig MAC-adresse: {mac}")
+    return ":".join(compact_mac[index:index + 2] for index in range(0, 12, 2))
+
+
 # --- ISO Endpoint ---
 @app.get("/api/proxmox/versions")
 def list_proxmox_versions():
@@ -106,14 +113,19 @@ def get_current_nodes():
 def start_baremetal_provisioning(data: Step1Data):
     global dnsmasq_process, active_proxmox_version
     try:
-        iso_path = ISO_DIR / data.selected_iso
-        if not iso_path.exists():
-            raise HTTPException(status_code=404, detail=f"ISO filen {data.selected_iso} blev ikke fundet.")
+        is_discovery = data.selected_iso == "discovery.iso"
+        if is_discovery:
+            if not (DISCOVERY_DIR / "vmlinuz").exists() or not (DISCOVERY_DIR / "initrd").exists():
+                raise HTTPException(status_code=400, detail="Discovery-image mangler: kør prepare-discovery-image.sh først.")
+        else:
+            iso_path = ISO_DIR / data.selected_iso
+            if not iso_path.exists():
+                raise HTTPException(status_code=404, detail=f"ISO filen {data.selected_iso} blev ikke fundet.")
 
-        version_name = iso_path.stem
+        version_name = "discovery" if is_discovery else iso_path.stem
         target_extracted = EXTRACTED_DIR / version_name
 
-        if not (target_extracted / "vmlinuz").exists() or not (target_extracted / "initrd.img").exists():
+        if not is_discovery and (not (target_extracted / "vmlinuz").exists() or not (target_extracted / "initrd.img").exists()):
             target_extracted.mkdir(parents=True, exist_ok=True)
             mount_point = Path("/tmp/mnt_iso")
             mount_point.mkdir(exist_ok=True)
@@ -138,6 +150,7 @@ def start_baremetal_provisioning(data: Step1Data):
         ]
 
         for node in data.nodes:
+            node.mac_address = normalize_mac(node.mac_address)
             conf_lines.append(f"dhcp-host={node.mac_address},{node.hostname},{node.ip},set:known")
 
         conf_lines.extend([

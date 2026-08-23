@@ -42,19 +42,19 @@ document.querySelector('#app').innerHTML = `
         </div>
         <div>
           <label><b>Automations Netværkskort:</b></label><br>
-          <input type="text" id="bm-interface" value="eth0" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-interface" placeholder="f.eks. enp1s0" style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>Gateway IP:</b></label><br>
-          <input type="text" id="bm-gateway" value="10.20.10.1" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-gateway" placeholder="f.eks. 10.20.10.1" style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>DNS IP:</b></label><br>
-          <input type="text" id="bm-dns" value="10.20.10.1" style="padding: 6px; width: 90%;">
+          <input type="text" id="bm-dns" placeholder="f.eks. 10.20.10.1" style="padding: 6px; width: 90%;">
         </div>
         <div>
           <label><b>Proxmox Root Password:</b></label><br>
-          <input type="password" id="bm-password" value="SecretPassword123!" style="padding: 6px; width: 90%;">
+          <input type="password" id="bm-password" placeholder="Indtast root password" style="padding: 6px; width: 90%;">
         </div>
       </div>
 
@@ -206,11 +206,11 @@ function renderNodeRows(count) {
           <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; margin-bottom: 0.8rem;">
             <div>
               <label style="font-size:12px;"><b>Hostname:</b></label><br>
-              <input type="text" class="bm-node-host" value="proxmox-node${i+1}" disabled style="width: 90%; padding: 4px;">
+              <input type="text" class="bm-node-host" placeholder="f.eks. proxmox-node${i+1}" disabled style="width: 90%; padding: 4px;">
             </div>
             <div>
               <label style="font-size:12px;"><b>Statisk IP:</b></label><br>
-              <input type="text" class="bm-node-ip" value="10.20.10.${10+i}" disabled style="width: 90%; padding: 4px;">
+              <input type="text" class="bm-node-ip" placeholder="f.eks. 10.20.10.${10+i}" disabled style="width: 90%; padding: 4px;">
             </div>
             <div>
               <label style="font-size:12px;"><b>OS-disk (Proxmox):</b></label><br>
@@ -378,6 +378,10 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
   });
 
   const data = await res.json();
+  if (!res.ok) {
+    alert(data.detail || data.message || "Discovery PXE kunne ikke startes.");
+    return;
+  }
   alert("Discovery PXE startet! Tænd nu serverne så de kan hente Micro-Image'et og rapportere deres diske.");
 });
 
@@ -421,6 +425,10 @@ document.getElementById('btn-start-pxe').addEventListener('click', async () => {
   });
 
   const data = await res.json();
+  if (!res.ok) {
+    alert(data.detail || data.message || "Proxmox PXE kunne ikke startes.");
+    return;
+  }
   alert(data.message || 'Proxmox PXE Installation startet!');
 });
 

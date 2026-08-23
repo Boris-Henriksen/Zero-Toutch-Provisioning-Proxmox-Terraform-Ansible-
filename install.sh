@@ -72,7 +72,7 @@ if [[ ! -f "$STORAGE_DIR/tftpboot/ipxe.efi" ]]; then
     cp /usr/lib/ipxe/ipxe.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
 fi
 
-if [[ ! -f "$STORAGE_DIR/tftpboot/autoexec.ipxe" ]]; then
+if [[ ! -f "$STORAGE_DIR/tftpboot/autoexec.ipxe" || "$(head -n 1 "$STORAGE_DIR/tftpboot/autoexec.ipxe" 2>/dev/null)" == "cat << 'EOF'" ]]; then
     cat << 'EOF' > "$STORAGE_DIR/tftpboot/autoexec.ipxe"
 #!ipxe
 dhcp

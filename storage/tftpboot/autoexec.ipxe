@@ -1,4 +1,3 @@
-cat << 'EOF' > ~/portal/storage/tftpboot/autoexec.ipxe
 #!ipxe
 dhcp
 chain http://${next-server}:8000/auto-installer.ipxe
