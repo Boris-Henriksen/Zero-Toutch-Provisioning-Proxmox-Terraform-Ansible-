@@ -68,12 +68,11 @@ find "$FRONTEND_DEPLOY_DIR" -type f -exec chmod 0644 {} +
 echo "==> [4/8] Opretter storage-mapper og PXE-boot filer..."
 mkdir -p "$STORAGE_DIR/isos" "$STORAGE_DIR/extracted" "$STORAGE_DIR/discovery" "$STORAGE_DIR/tftpboot"
 
-if [[ ! -f "$STORAGE_DIR/tftpboot/ipxe.efi" ]]; then
-    cp /usr/lib/ipxe/ipxe.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
-fi
+install -m 0644 /usr/lib/ipxe/snponly.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
 
 cat << 'EOF' > "$STORAGE_DIR/tftpboot/autoexec.ipxe"
 #!ipxe
+dhcp || shell
 chain http://${next-server}:8000/auto-installer.ipxe
 EOF
 
