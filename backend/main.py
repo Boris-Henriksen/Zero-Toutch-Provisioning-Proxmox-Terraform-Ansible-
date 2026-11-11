@@ -20,7 +20,7 @@ ISO_DIR = STORAGE_DIR / "isos"
 EXTRACTED_DIR = STORAGE_DIR / "extracted"
 DISCOVERY_DIR = STORAGE_DIR / "discovery"
 TFTP_DIR = STORAGE_DIR / "tftpboot"
-
+DISCOVERY_ISO_NAME = "ubuntu-live.iso"
 # 3. Opret mapper på disken
 ISO_DIR.mkdir(parents=True, exist_ok=True)
 EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
@@ -173,8 +173,11 @@ def start_baremetal_provisioning(data: Step1Data):
     try:
         data.interface = resolve_pxe_interface(data.interface)
         is_discovery = data.selected_iso == "discovery.iso"
+        missing_boot_files = [name for name in ("ipxe.efi", "undionly.kpxe") if not (TFTP_DIR / name).exists()]
+        if missing_boot_files:
+            raise HTTPException(status_code=400, detail=f"PXE-bootfiler mangler i {TFTP_DIR}: {', '.join(missing_boot_files)}. Kør install.sh igen.")
         if is_discovery:
-            if not (DISCOVERY_DIR / "vmlinuz").exists() or not (DISCOVERY_DIR / "initrd").exists():
+            if not all((DISCOVERY_DIR / name).exists() for name in ("vmlinuz", "initrd", DISCOVERY_ISO_NAME)):
                 raise HTTPException(status_code=400, detail="Discovery-image mangler: kør prepare-discovery-image.sh først.")
             kernel_description = subprocess.run(
                 ["file", str(DISCOVERY_DIR / "vmlinuz")], capture_output=True, text=True, check=False
@@ -209,6 +212,8 @@ def start_baremetal_provisioning(data: Step1Data):
         server_address, netmask, pool_start, pool_end, prefix_len = detect_interface_network(data.interface, len(data.nodes))
 
         conf_lines = [
+            # Bliv root, så TFTP kan læse filer under f.eks. /home/<bruger> (mode 0750).
+            "user=root",
             f"interface={data.interface}",
             "bind-interfaces",
             f"dhcp-range={pool_start},{pool_end},{netmask},1h",
@@ -227,8 +232,12 @@ def start_baremetal_provisioning(data: Step1Data):
             # Undgå boot-loop: klienter der allerede kører iPXE (identificeret via DHCP user-class)
             # henter scriptet direkte over lokal HTTP og prøver derfor ikke net0 igen.
             "dhcp-userclass=set:ipxe,iPXE",
+            # Option 93 (client-arch): 7/9 = UEFI x86-64, alt andet behandles som legacy BIOS.
+            "dhcp-match=set:efi64,option:client-arch,7",
+            "dhcp-match=set:efi64,option:client-arch,9",
             f"dhcp-boot=tag:ipxe,http://{server_address}:8000/auto-installer.ipxe",
-            "dhcp-boot=tag:!ipxe,ipxe.efi"
+            "dhcp-boot=tag:!ipxe,tag:efi64,ipxe.efi",
+            "dhcp-boot=tag:!ipxe,tag:!efi64,undionly.kpxe"
         ])
 
         os.makedirs("/tmp/portal_pxe", exist_ok=True)
@@ -240,11 +249,14 @@ def start_baremetal_provisioning(data: Step1Data):
         with open("/tmp/portal_pxe/nodes.json", "w") as f:
             json.dump(session_data, f)
 
+        # Log til fil i stedet for en pipe, der aldrig læses (fyldt pipe = dnsmasq hænger).
+        dnsmasq_log = open("/tmp/portal_pxe/dnsmasq.log", "ab")
         dnsmasq_process = subprocess.Popen(
             ["sudo", "dnsmasq", "-C", "/tmp/portal_pxe/dnsmasq.conf", "-d"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stdout=dnsmasq_log,
+            stderr=subprocess.STDOUT
         )
+        dnsmasq_log.close()
 
         return {"status": "success", "message": f"PXE/DHCP startet for {len(data.nodes)} node(r) med {version_name}."}
 
@@ -271,9 +283,11 @@ def get_ipxe_script(request: Request):
 
     # Hvis "1. Start Discovery Mode" er valgt
     if active_proxmox_version == "discovery":
+        # Ubuntu live-initrd'en (casper) skal have boot=casper og en rootfs-kilde (url=), ellers
+        # stopper boot. systemd.run kører uden shell, så pipe'en skal pakkes ind i bash -c.
         ipxe_script = f"""#!ipxe
 
-kernel http://{host}/proxmox/discovery/vmlinuz initrd=initrd ip=dhcp cloud-config-url=/dev/null ds=nocloud portal.server=http://{host} systemd.run="curl -fsSL http://{host}/proxmox/discovery/discovery-script.sh | bash" quiet
+kernel http://{host}/proxmox/discovery/vmlinuz initrd=initrd boot=casper ip=dhcp url=http://{host}/proxmox/discovery/{DISCOVERY_ISO_NAME} cloud-config-url=/dev/null ds=nocloud portal.server=http://{host} systemd.run="/bin/bash -c 'curl -fsSL http://{host}/proxmox/discovery/discovery-script.sh | bash'" quiet
 initrd http://{host}/proxmox/discovery/initrd
 boot
 """

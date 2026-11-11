@@ -8,7 +8,7 @@ fi
 
 PORTAL_HOST=${PORTAL_URL#http://}
 PORTAL_HOST=${PORTAL_HOST%%/*}
-INTERFACE=$(ip route get "$PORTAL_HOST" | awk '{for (index = 1; index <= NF; index++) if ($index == "dev") {print $(index + 1); exit}}')
+INTERFACE=$(ip route get "$PORTAL_HOST" | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
 MAC=$(cat "/sys/class/net/${INTERFACE}/address")
 
 DISKS_JSON=$(python3 - <<'PY'

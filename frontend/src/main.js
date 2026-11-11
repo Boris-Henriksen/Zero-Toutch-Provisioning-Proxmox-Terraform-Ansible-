@@ -152,6 +152,8 @@ async function loadIsoVersions() {
     const data = await res.json();
     if (data.versions && data.versions.length > 0) {
       select.innerHTML = data.versions.map(v => `<option value="${v}">${v}</option>`).join('');
+      const savedIso = loadState()?.general?.iso;
+      if (savedIso && data.versions.includes(savedIso)) select.value = savedIso;
     } else {
       select.innerHTML = '<option value="">Ingen .iso filer fundet i storage/isos/</option>';
     }
@@ -167,19 +169,163 @@ const sec2 = document.getElementById('section-step2');
 const btn1 = document.getElementById('btn-step1');
 const btn2 = document.getElementById('btn-step2');
 
-btn1.addEventListener('click', () => {
-  sec1.style.display = 'block';
-  sec2.style.display = 'none';
-  btn1.style.background = '#007bff';
-  btn2.style.background = '#6c757d';
-});
+let activeStep = 1;
 
-btn2.addEventListener('click', () => {
-  sec1.style.display = 'none';
-  sec2.style.display = 'block';
-  btn1.style.background = '#6c757d';
-  btn2.style.background = '#007bff';
-});
+function showStep(step) {
+  activeStep = step;
+  sec1.style.display = step === 1 ? 'block' : 'none';
+  sec2.style.display = step === 2 ? 'block' : 'none';
+  btn1.style.background = step === 1 ? '#007bff' : '#6c757d';
+  btn2.style.background = step === 2 ? '#007bff' : '#6c757d';
+}
+
+btn1.addEventListener('click', () => { showStep(1); saveState(); });
+btn2.addEventListener('click', () => { showStep(2); saveState(); });
+
+// --- Gem/gendan formular i browserens localStorage (root password gemmes bevidst ikke) ---
+const STATE_KEY = 'portal-form-state-v1';
+let restoring = false;
+
+function loadState() {
+  try {
+    return JSON.parse(localStorage.getItem(STATE_KEY)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function collectNodeStates() {
+  return Array.from(document.querySelectorAll('.node-card')).map(card => {
+    const diskSelect = card.querySelector('.bm-node-disk');
+    const osdSelects = Array.from(card.querySelectorAll('.bm-ceph-osd-select'));
+    return {
+      mac: card.querySelector('.bm-node-mac').value,
+      host: card.querySelector('.bm-node-host').value,
+      ip: card.querySelector('.bm-node-ip').value,
+      // Før discovery findes diskene ikke i dropdown'en endnu - behold den gemte værdi.
+      disk: diskSelect.value || card.dataset.savedDisk || '',
+      ceph: card.querySelector('.bm-ceph-toggle').checked,
+      cephDisks: osdSelects.length > 0
+        ? osdSelects.map(s => s.value).filter(v => v !== '')
+        : JSON.parse(card.dataset.savedCephDisks || '[]')
+    };
+  });
+}
+
+function collectState() {
+  const vms = {};
+  document.querySelectorAll('.vm-toggle').forEach(cb => {
+    const row = cb.closest('tr');
+    vms[cb.getAttribute('data-id')] = {
+      active: cb.checked,
+      node: row.querySelector('.vm-node').value,
+      cores: row.querySelector('.vm-cores').value,
+      ram: row.querySelector('.vm-ram').value,
+      disk: row.querySelector('.vm-disk').value
+    };
+  });
+
+  return {
+    activeStep,
+    general: {
+      iso: document.getElementById('bm-iso-version').value || loadState()?.general?.iso || '',
+      interface: document.getElementById('bm-interface').value,
+      gateway: document.getElementById('bm-gateway').value,
+      dns: document.getElementById('bm-dns').value
+    },
+    nodeCount: document.getElementById('bm-node-count').value,
+    nodes: collectNodeStates(),
+    step2: {
+      proxmoxIp: document.getElementById('proxmox-ip').value,
+      subnetPrefix: document.getElementById('subnet-prefix').value,
+      startIp: document.getElementById('start-ip').value,
+      sshKeys: document.getElementById('ssh-keys').value,
+      vms
+    }
+  };
+}
+
+function saveState() {
+  if (restoring) return;
+  try {
+    localStorage.setItem(STATE_KEY, JSON.stringify(collectState()));
+  } catch {
+    // localStorage utilgængelig (f.eks. privat browsing) - ignorer
+  }
+}
+
+function applyNodeStates(nodeStates) {
+  document.querySelectorAll('.node-card').forEach((card, i) => {
+    const node = nodeStates[i];
+    if (!node) return;
+    card.querySelector('.bm-node-mac').value = node.mac || '';
+    card.querySelector('.bm-node-host').value = node.host || '';
+    card.querySelector('.bm-node-ip').value = node.ip || '';
+    card.dataset.savedDisk = node.disk || '';
+    card.dataset.savedCephDisks = JSON.stringify(node.cephDisks || []);
+    const cephToggle = card.querySelector('.bm-ceph-toggle');
+    cephToggle.checked = !!node.ceph;
+    document.getElementById(`ceph-options-${i}`).style.display = node.ceph ? 'block' : 'none';
+  });
+}
+
+async function restoreState() {
+  restoring = true;
+  const state = loadState();
+  try {
+    if (state) {
+      showStep(state.activeStep === 2 ? 2 : 1);
+      const g = state.general || {};
+      document.getElementById('bm-interface').value = g.interface || '';
+      document.getElementById('bm-gateway').value = g.gateway || '';
+      document.getElementById('bm-dns').value = g.dns || '';
+
+      const nodes = state.nodes || [];
+      const count = Math.max(1, nodes.length || parseInt(state.nodeCount) || 1);
+      document.getElementById('bm-node-count').value = count;
+      renderNodeRows(count);
+      applyNodeStates(nodes);
+
+      const s2 = state.step2 || {};
+      if (s2.proxmoxIp !== undefined) document.getElementById('proxmox-ip').value = s2.proxmoxIp;
+      if (s2.subnetPrefix !== undefined) document.getElementById('subnet-prefix').value = s2.subnetPrefix;
+      if (s2.startIp !== undefined) document.getElementById('start-ip').value = s2.startIp;
+      if (s2.sshKeys !== undefined) document.getElementById('ssh-keys').value = s2.sshKeys;
+      Object.entries(s2.vms || {}).forEach(([id, vm]) => {
+        const row = document.getElementById(`row-${id}`);
+        if (!row) return;
+        row.querySelector('.vm-toggle').checked = !!vm.active;
+        row.querySelector('.vm-node').value = vm.node;
+        row.querySelector('.vm-cores').value = vm.cores;
+        row.querySelector('.vm-ram').value = vm.ram;
+        row.querySelector('.vm-disk').value = vm.disk;
+      });
+    }
+
+    // Intet gemt i denne browser: hent MAC-adresserne fra den aktive PXE-session på serveren.
+    const hasMacs = (state?.nodes || []).some(n => n.mac);
+    if (!hasMacs) {
+      const res = await fetch('/api/baremetal/nodes');
+      const data = await res.json();
+      if (data.nodes && data.nodes.length > 0) {
+        document.getElementById('bm-node-count').value = data.nodes.length;
+        renderNodeRows(data.nodes.length);
+        applyNodeStates(data.nodes.map(n => ({ mac: n.mac_address })));
+      }
+    }
+  } catch {
+    // Backend utilgængelig - behold det der er gendannet lokalt
+  } finally {
+    restoring = false;
+  }
+  saveState();
+  checkDiscoveredDisks();
+}
+
+document.getElementById('app').addEventListener('input', saveState);
+document.getElementById('app').addEventListener('change', saveState);
+// Fjern-OSD knappen ændrer DOM'en uden input/change event
+document.getElementById('app').addEventListener('click', () => setTimeout(saveState, 0));
 
 // Render Node kort (Kun MAC-adresse er åben fra start!)
 function renderNodeRows(count) {
@@ -295,13 +441,19 @@ function addOsdDropdown(nodeIdx, optionsHtml = '') {
     <button type="button" onclick="this.parentElement.remove()" style="background: #dc3545; color: white; border: none; padding: 4px 8px; cursor: pointer; border-radius: 3px;">✕</button>
   `;
   container.appendChild(div);
+  return div.querySelector('select');
 }
 
 renderNodeRows(1);
 
 document.getElementById('btn-render-nodes').addEventListener('click', () => {
   const count = parseInt(document.getElementById('bm-node-count').value) || 1;
+  // Bevar allerede indtastede MAC'er m.m. når antallet ændres
+  const existing = collectNodeStates();
   renderNodeRows(count);
+  applyNodeStates(existing);
+  saveState();
+  checkDiscoveredDisks();
 });
 
 // Automatisk Polling for fundne diske fra Micro-Image
@@ -339,14 +491,26 @@ async function checkDiscoveredDisks() {
         ).join('');
 
         osSelect.innerHTML = diskOptionsHtml;
-        if (currentOsVal) osSelect.value = currentOsVal;
+        const wantedOsVal = currentOsVal || card.dataset.savedDisk;
+        if (wantedOsVal && matchingNode.discovered_disks.some(d => d.name === wantedOsVal)) {
+          osSelect.value = wantedOsVal;
+        }
 
         // Gem options til brug for Ceph
         card.setAttribute('data-disk-options', diskOptionsHtml);
 
         const cephContainer = card.querySelector('.ceph-dropdown-container');
         if (cephContainer.children.length === 0) {
-          addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
+          const savedCephDisks = JSON.parse(card.dataset.savedCephDisks || '[]');
+          if (savedCephDisks.length === 0) {
+            addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
+          } else {
+            savedCephDisks.forEach(diskName => {
+              const select = addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
+              select.value = diskName;
+            });
+          }
+          saveState();
         }
       }
     });
@@ -358,6 +522,8 @@ async function checkDiscoveredDisks() {
 
 // Tjek for diske hvert 3. sekund
 setInterval(checkDiscoveredDisks, 3000);
+
+restoreState();
 
 // 1. Start Discovery Mode
 document.getElementById('btn-start-discovery').addEventListener('click', async () => {

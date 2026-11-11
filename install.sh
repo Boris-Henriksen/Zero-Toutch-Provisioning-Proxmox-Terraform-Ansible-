@@ -56,6 +56,8 @@ else
     npm install --prefix "$FRONTEND_DIR"
 fi
 npm run build --prefix "$FRONTEND_DIR"
+# Giv build-output tilbage til repo-ejeren, så senere 'npm run build' uden sudo virker.
+chown -R "$(stat -c '%U:%G' "$REPO_DIR")" "$FRONTEND_DIR/dist" "$FRONTEND_DIR/node_modules"
 
 echo "==>     Installerer frontend i ${FRONTEND_DEPLOY_DIR}..."
 rm -rf "$FRONTEND_DEPLOY_DIR"
@@ -68,26 +70,30 @@ find "$FRONTEND_DEPLOY_DIR" -type f -exec chmod 0644 {} +
 echo "==> [4/8] Opretter storage-mapper og PXE-boot filer..."
 mkdir -p "$STORAGE_DIR/isos" "$STORAGE_DIR/extracted" "$STORAGE_DIR/discovery" "$STORAGE_DIR/tftpboot"
 
-install -m 0644 /usr/lib/ipxe/snponly.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
+# Fuld ipxe.efi (egne NIC-drivere): snponly.efi deler netkortet med firmwarens
+# netværksstack og modtager på nogle maskiner aldrig DHCP-svar ("Configuring net0").
+install -m 0644 /usr/lib/ipxe/ipxe.efi "$STORAGE_DIR/tftpboot/ipxe.efi"
+# Legacy BIOS-klienter (f.eks. Dell i "BIOS boot mode") kan ikke køre ipxe.efi.
+install -m 0644 /usr/lib/ipxe/undionly.kpxe "$STORAGE_DIR/tftpboot/undionly.kpxe"
 
 cat << 'EOF' > "$STORAGE_DIR/tftpboot/autoexec.ipxe"
 #!ipxe
-ifopen net0 && dhcp net0 && goto boot
-ifopen net1 && dhcp net1 && goto boot
-ifopen net2 && dhcp net2 && goto boot
-ifopen net3 && dhcp net3 && goto boot
+# Genbrug firmwarens DHCP-lease hvis det findes, ellers lav DHCP paa alle interfaces.
+isset ${net0/ip} && ifopen net0 && goto boot ||
+dhcp && goto boot ||
+echo DHCP fejlede - aabner iPXE shell
 shell
 
 :boot
-chain http://${next-server}:8000/auto-installer.ipxe
+chain http://${next-server}:8000/auto-installer.ipxe || shell
 EOF
 
 if [[ -f "$STORAGE_DIR/discovery/discovery-script.sh" ]]; then
     chmod +x "$STORAGE_DIR/discovery/discovery-script.sh"
 fi
 
-if [[ ! -f "$STORAGE_DIR/discovery/vmlinuz" || ! -f "$STORAGE_DIR/discovery/initrd" ]]; then
-    echo "    NB: storage/discovery/vmlinuz + initrd mangler."
+if [[ ! -f "$STORAGE_DIR/discovery/vmlinuz" || ! -f "$STORAGE_DIR/discovery/initrd" || ! -f "$STORAGE_DIR/discovery/ubuntu-live.iso" ]]; then
+    echo "    NB: storage/discovery/vmlinuz + initrd + ubuntu-live.iso mangler."
     echo "    Kør 'sudo ./scripts/prepare-discovery-image.sh /sti/til/ubuntu-live-server.iso' for at generere dem."
 fi
 

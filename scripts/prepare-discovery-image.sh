@@ -52,7 +52,11 @@ fi
 echo "==> Kopierer casper/vmlinuz og casper/initrd til $DISCOVERY_DIR ..."
 cp "$MOUNT_POINT/casper/vmlinuz" "$DISCOVERY_DIR/vmlinuz"
 cp "$MOUNT_POINT/casper/initrd" "$DISCOVERY_DIR/initrd"
-chmod 644 "$DISCOVERY_DIR/vmlinuz" "$DISCOVERY_DIR/initrd"
+
+# casper henter selve live-rootfs'et fra ISO'en via url= ved netboot.
+echo "==> Kopierer ISO til $DISCOVERY_DIR/ubuntu-live.iso (bruges som rootfs via HTTP) ..."
+cp "$ISO_PATH" "$DISCOVERY_DIR/ubuntu-live.iso"
+chmod 644 "$DISCOVERY_DIR/vmlinuz" "$DISCOVERY_DIR/initrd" "$DISCOVERY_DIR/ubuntu-live.iso"
 
 if [[ -f "$DISCOVERY_DIR/discovery-script.sh" ]]; then
     chmod +x "$DISCOVERY_DIR/discovery-script.sh"

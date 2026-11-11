@@ -20,7 +20,8 @@ sudo ./install.sh
 2. Opretter et Python virtualenv (`venv/`) og installerer `backend/requirements.txt`.
 3. Bygger frontend (`npm ci && npm run build` i `frontend/`).
 4. Opretter `storage/{isos,extracted,discovery,tftpboot}` og kopierer `ipxe.efi`
-   fra apt-pakken `ipxe`.
+   (UEFI) og `undionly.kpxe` (legacy BIOS) fra apt-pakken `ipxe`. dnsmasq vælger
+   automatisk den rigtige ud fra klientens arkitektur (DHCP option 93).
 5. Deaktiverer systemets `dnsmasq.service` (portalen starter sin egen dnsmasq-proces
    pr. PXE-session).
 6. Installerer og starter en systemd-service (`portal-backend.service`) der kører
@@ -41,7 +42,8 @@ Efter installation er portalen tilgængelig på `http://<server-ip>/`.
   ```
 
    ARM64 ISO'er kan ikke bruges til de x86-64 bare-metal-servere og bliver afvist
-   af scriptet.
+   af scriptet. ISO'en kopieres også til `storage/discovery/ubuntu-live.iso`, da
+   live-systemet henter sit rootfs derfra over HTTP (kræver ~4 GB RAM på noden).
 
 ## Nyttige kommandoer
 

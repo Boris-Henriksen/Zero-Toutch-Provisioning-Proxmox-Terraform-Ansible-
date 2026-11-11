@@ -1,9 +1,9 @@
 #!ipxe
-ifopen net0 && dhcp net0 && goto boot
-ifopen net1 && dhcp net1 && goto boot
-ifopen net2 && dhcp net2 && goto boot
-ifopen net3 && dhcp net3 && goto boot
+# Genbrug firmwarens DHCP-lease hvis det findes, ellers lav DHCP paa alle interfaces.
+isset ${net0/ip} && ifopen net0 && goto boot ||
+dhcp && goto boot ||
+echo DHCP fejlede - aabner iPXE shell
 shell
 
 :boot
-chain http://${next-server}:8000/auto-installer.ipxe
+chain http://${next-server}:8000/auto-installer.ipxe || shell
