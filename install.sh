@@ -40,7 +40,26 @@ apt-get install -y \
     ipxe \
     nginx \
     curl \
-    ca-certificates
+    ca-certificates \
+    xorriso \
+    file
+
+echo "==>     Installerer proxmox-auto-install-assistant (bygger Proxmox PXE-installer med svarfil-URL)..."
+if ! command -v proxmox-auto-install-assistant >/dev/null; then
+    # Hentes over http, da https til download.proxmox.com kan blive opsnappet af netværksfiltre.
+    # Pakken verificeres mod SHA256 i Proxmox' pakkeindeks.
+    PVE_REPO="http://download.proxmox.com/debian/pve"
+    PKG_INFO=$(curl -fsSL "$PVE_REPO/dists/trixie/pve-no-subscription/binary-amd64/Packages.gz" | gunzip \
+        | awk '/^Package: proxmox-auto-install-assistant$/{p=1} p&&/^$/{p=0} p')
+    PKG_FILE=$(echo "$PKG_INFO" | sed -n 's/^Filename: //p' | tail -n 1)
+    PKG_SHA=$(echo "$PKG_INFO" | sed -n 's/^SHA256: //p' | tail -n 1)
+    TMP_DEB=$(mktemp --suffix=.deb)
+    curl -fsSL -o "$TMP_DEB" "$PVE_REPO/$PKG_FILE"
+    echo "$PKG_SHA  $TMP_DEB" | sha256sum -c -
+    chmod 0644 "$TMP_DEB"
+    apt-get install -y "$TMP_DEB"
+    rm -f "$TMP_DEB"
+fi
 
 echo "==> [2/8] Opretter Python virtualenv og installerer backend-afhængigheder..."
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -85,7 +104,7 @@ echo DHCP fejlede - aabner iPXE shell
 shell
 
 :boot
-chain http://${next-server}:8000/auto-installer.ipxe || shell
+chain http://${next-server}:8000/auto-installer.ipxe?mac=${netX/mac} || shell
 EOF
 
 if [[ -f "$STORAGE_DIR/discovery/discovery-script.sh" ]]; then
@@ -121,7 +140,9 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
+systemctl enable "${SERVICE_NAME}"
+# restart (ikke kun --now), så en ny kørsel af install.sh også indlæser opdateret kode.
+systemctl restart "${SERVICE_NAME}"
 
 echo "==> [7/8] Konfigurerer nginx (serverer frontend + proxy til backend)..."
 cat << EOF > /etc/nginx/sites-available/portal

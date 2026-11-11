@@ -6,4 +6,4 @@ echo DHCP fejlede - aabner iPXE shell
 shell
 
 :boot
-chain http://${next-server}:8000/auto-installer.ipxe || shell
+chain http://${next-server}:8000/auto-installer.ipxe?mac=${netX/mac} || shell

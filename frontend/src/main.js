@@ -54,7 +54,68 @@ document.querySelector('#app').innerHTML = `
         </div>
         <div>
           <label><b>Proxmox Root Password:</b></label><br>
-          <input type="password" id="bm-password" placeholder="Indtast root password" disabled style="padding: 6px; width: 90%;">
+          <input type="password" id="bm-password" placeholder="Mindst 8 tegn" disabled style="padding: 6px; width: 90%;">
+        </div>
+        <div>
+          <label><b>Domæne:</b></label><br>
+          <input type="text" id="bm-domain" value="lab.local" placeholder="f.eks. lab.local" disabled style="padding: 6px; width: 90%;">
+        </div>
+        <div>
+          <label><b>Admin e-mail:</b></label><br>
+          <input type="text" id="bm-mailto" value="admin@lab.local" disabled style="padding: 6px; width: 90%;">
+        </div>
+        <div>
+          <label><b>Filsystem (OS-disk):</b></label><br>
+          <select id="bm-filesystem" disabled style="padding: 6px; width: 95%;">
+            <option value="ext4">ext4</option>
+            <option value="xfs">xfs</option>
+            <option value="zfs">zfs</option>
+          </select>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 0.5rem; width: 95%;">
+          <div>
+            <label><b>Tastatur:</b></label><br>
+            <input type="text" id="bm-keyboard" value="dk" disabled style="padding: 6px; width: 80%;">
+          </div>
+          <div>
+            <label><b>Land:</b></label><br>
+            <input type="text" id="bm-country" value="dk" disabled style="padding: 6px; width: 80%;">
+          </div>
+          <div>
+            <label><b>Tidszone:</b></label><br>
+            <input type="text" id="bm-timezone" value="Europe/Copenhagen" disabled style="padding: 6px; width: 90%;">
+          </div>
+        </div>
+
+        <div style="grid-column: 1 / -1; border-top: 1px solid #ddd; padding-top: 0.8rem;">
+          <label style="cursor: pointer;">
+            <input type="checkbox" id="bm-create-cluster" disabled>
+            <b>Opret Cluster?</b>
+          </label>
+          <div id="bm-cluster-options" style="display: none; margin-top: 0.6rem; padding: 0.8rem; background: #f0f4f8; border-left: 3px solid #007bff;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.5rem;">
+              <div>
+                <label style="font-size: 13px;"><b>Clusternavn:</b></label><br>
+                <input type="text" id="bm-cluster-name" value="pve-cluster" disabled style="padding: 5px; width: 85%;">
+              </div>
+              <div>
+                <label style="font-size: 13px;"><b>Ceph pool-navn:</b></label><br>
+                <input type="text" id="bm-ceph-pool" value="ceph-vm" disabled style="padding: 5px; width: 85%;">
+              </div>
+              <div>
+                <label style="font-size: 13px;"><b>Ceph replika (size):</b></label><br>
+                <input type="number" id="bm-ceph-size" value="3" min="1" max="10" disabled style="padding: 5px; width: 60px;">
+              </div>
+              <div>
+                <label style="font-size: 13px;"><b>Ceph min_size:</b></label><br>
+                <input type="number" id="bm-ceph-min-size" value="2" min="1" max="10" disabled style="padding: 5px; width: 60px;">
+              </div>
+            </div>
+            <p id="bm-ceph-info" style="font-size: 12px; color: #555; margin: 0.6rem 0 0 0;">
+              Vælg under hver node om den skal bruges i Ceph. Ceph-netværket beregnes automatisk ud fra nodernes IP.
+              Cluster og Ceph oprettes automatisk når alle noder er installeret.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -67,6 +128,16 @@ document.querySelector('#app').innerHTML = `
 
       <div id="bm-nodes-container" style="margin-bottom: 1.5rem;">
         <!-- Node kort oprettes her -->
+      </div>
+
+      <div id="bm-progress" style="display: none; margin-bottom: 1rem; padding: 0.8rem 1rem; border-radius: 6px; border: 1px solid #b8daff; background: #e7f1ff; font-size: 14px;">
+        <div id="bm-phase-message"></div>
+        <div id="bm-cluster-message" style="margin-top: 4px;"></div>
+        <button id="btn-retry-cluster" style="display: none; margin-top: 6px; padding: 4px 10px; cursor: pointer;">Prøv cluster-opsætning igen</button>
+        <details id="bm-cluster-log-box" style="display: none; margin-top: 6px;">
+          <summary style="cursor: pointer; font-size: 12px;">Vis log</summary>
+          <pre id="bm-cluster-log" style="font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow: auto; margin: 4px 0 0 0;"></pre>
+        </details>
       </div>
 
       <div style="display: flex; gap: 10px; background: #f8f9fa; padding: 1rem; border-radius: 6px; border: 1px solid #e9ecef;">
@@ -153,7 +224,9 @@ async function loadIsoVersions() {
     if (data.versions && data.versions.length > 0) {
       select.innerHTML = data.versions.map(v => `<option value="${v}">${v}</option>`).join('');
       const savedIso = loadState()?.general?.iso;
+      const proxmoxIso = data.versions.find(v => v.toLowerCase().includes('proxmox'));
       if (savedIso && data.versions.includes(savedIso)) select.value = savedIso;
+      else if (proxmoxIso) select.value = proxmoxIso;
     } else {
       select.innerHTML = '<option value="">Ingen .iso filer fundet i storage/isos/</option>';
     }
@@ -231,7 +304,22 @@ function collectState() {
       iso: document.getElementById('bm-iso-version').value || loadState()?.general?.iso || '',
       interface: document.getElementById('bm-interface').value,
       gateway: document.getElementById('bm-gateway').value,
-      dns: document.getElementById('bm-dns').value
+      dns: document.getElementById('bm-dns').value,
+      domain: document.getElementById('bm-domain').value,
+      mailto: document.getElementById('bm-mailto').value,
+      filesystem: document.getElementById('bm-filesystem').value,
+      keyboard: document.getElementById('bm-keyboard').value,
+      country: document.getElementById('bm-country').value,
+      timezone: document.getElementById('bm-timezone').value
+    },
+    cluster: {
+      enabled: isClusterEnabled(),
+      name: document.getElementById('bm-cluster-name').value,
+      pool: document.getElementById('bm-ceph-pool').value,
+      size: document.getElementById('bm-ceph-size').value,
+      minSize: document.getElementById('bm-ceph-min-size').value,
+      sizeEdited: document.getElementById('bm-ceph-size').dataset.edited === 'true',
+      minSizeEdited: document.getElementById('bm-ceph-min-size').dataset.edited === 'true'
     },
     nodeCount: document.getElementById('bm-node-count').value,
     nodes: collectNodeStates(),
@@ -269,6 +357,17 @@ function applyNodeStates(nodeStates) {
   });
 }
 
+function applyClusterState(cluster) {
+  if (!cluster) return;
+  document.getElementById('bm-create-cluster').checked = !!cluster.enabled;
+  if (cluster.name) document.getElementById('bm-cluster-name').value = cluster.name;
+  if (cluster.pool) document.getElementById('bm-ceph-pool').value = cluster.pool;
+  if (cluster.size) document.getElementById('bm-ceph-size').value = cluster.size;
+  if (cluster.minSize) document.getElementById('bm-ceph-min-size').value = cluster.minSize;
+  document.getElementById('bm-ceph-size').dataset.edited = cluster.sizeEdited ? 'true' : '';
+  document.getElementById('bm-ceph-min-size').dataset.edited = cluster.minSizeEdited ? 'true' : '';
+}
+
 async function restoreState() {
   restoring = true;
   const state = loadState();
@@ -279,6 +378,10 @@ async function restoreState() {
       document.getElementById('bm-interface').value = g.interface || '';
       document.getElementById('bm-gateway').value = g.gateway || '';
       document.getElementById('bm-dns').value = g.dns || '';
+      ['domain', 'mailto', 'filesystem', 'keyboard', 'country', 'timezone'].forEach(key => {
+        if (g[key]) document.getElementById(`bm-${key}`).value = g[key];
+      });
+      applyClusterState(state.cluster);
 
       const nodes = state.nodes || [];
       const count = Math.max(1, nodes.length || parseInt(state.nodeCount) || 1);
@@ -308,9 +411,17 @@ async function restoreState() {
       const res = await fetch('/api/baremetal/nodes');
       const data = await res.json();
       if (data.nodes && data.nodes.length > 0) {
+        if (data.create_cluster) applyClusterState({ enabled: true });
         document.getElementById('bm-node-count').value = data.nodes.length;
         renderNodeRows(data.nodes.length);
-        applyNodeStates(data.nodes.map(n => ({ mac: n.mac_address })));
+        applyNodeStates(data.nodes.map(n => ({
+          mac: n.mac_address,
+          host: n.hostname === 'discovery-temp' ? '' : n.hostname,
+          ip: data.mode === 'install' ? n.ip : '',
+          disk: data.mode === 'install' ? n.disk : '',
+          ceph: !!n.enable_ceph,
+          cephDisks: n.ceph_disks || []
+        })));
       }
     }
   } catch {
@@ -318,6 +429,7 @@ async function restoreState() {
   } finally {
     restoring = false;
   }
+  updateClusterVisibility();
   saveState();
   checkDiscoveredDisks();
 }
@@ -346,6 +458,7 @@ function renderNodeRows(count) {
             </span>
           </div>
         </div>
+        <div class="node-status" style="display: none; font-size: 12px; margin: -0.4rem 0 0.6rem 0; color: #004085;"></div>
 
         <!-- System- & Netværksindstillinger (Skjult indtil Discovery) -->
         <div class="config-section" style="border-top: 1px solid #eee; padding-top: 0.8rem; margin-top: 0.5rem; opacity: 0.6;">
@@ -366,11 +479,11 @@ function renderNodeRows(count) {
             </div>
           </div>
 
-          <!-- Ceph Sektion -->
-          <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed #ccc;">
+          <!-- Ceph Sektion (vises kun når "Opret Cluster?" er valgt) -->
+          <div class="ceph-section" style="display: ${isClusterEnabled() ? 'block' : 'none'}; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed #ccc;">
             <label style="font-size: 13px; cursor: pointer;">
-              <input type="checkbox" class="bm-ceph-toggle" data-index="${i}" disabled> 
-              <b>Opret Ceph Cluster på denne node</b>
+              <input type="checkbox" class="bm-ceph-toggle" data-index="${i}" disabled>
+              <b>Brug denne node i Ceph</b> <span style="color: #dc3545; font-size: 12px;">(valgte OSD-diske slettes)</span>
             </label>
 
             <div id="ceph-options-${i}" style="display: none; margin-top: 8px; padding: 8px; background: #f0f4f8; border-left: 3px solid #007bff;">
@@ -395,6 +508,7 @@ function renderNodeRows(count) {
       const idx = e.target.getAttribute('data-index');
       const box = document.getElementById(`ceph-options-${idx}`);
       box.style.display = e.target.checked ? 'block' : 'none';
+      refreshCephDefaults();
     });
   });
 
@@ -429,6 +543,55 @@ function updateProvisioningGate() {
   });
 }
 
+function isClusterEnabled() {
+  const checkbox = document.getElementById('bm-create-cluster');
+  return !!(checkbox && checkbox.checked);
+}
+
+function updateClusterVisibility() {
+  const enabled = isClusterEnabled();
+  document.getElementById('bm-cluster-options').style.display = enabled ? 'block' : 'none';
+  document.querySelectorAll('.ceph-section').forEach(section => {
+    section.style.display = enabled ? 'block' : 'none';
+  });
+  refreshCephDefaults();
+}
+
+function cephNodeCount() {
+  if (!isClusterEnabled()) return 0;
+  return Array.from(document.querySelectorAll('.bm-ceph-toggle')).filter(cb => cb.checked).length;
+}
+
+// Replika-felterne auto-udfyldes ud fra antal Ceph-noder, indtil brugeren selv ændrer dem.
+function refreshCephDefaults() {
+  const sizeInput = document.getElementById('bm-ceph-size');
+  const minInput = document.getElementById('bm-ceph-min-size');
+  const count = cephNodeCount();
+  if (sizeInput.dataset.edited !== 'true' && count > 0) {
+    sizeInput.value = Math.min(3, count);
+  }
+  if (minInput.dataset.edited !== 'true') {
+    const currentSize = parseInt(sizeInput.value) || 1;
+    minInput.value = currentSize - Math.floor(currentSize / 2);
+  }
+  const info = document.getElementById('bm-ceph-info');
+  const size = parseInt(sizeInput.value) || 0;
+  let warning = '';
+  if (count > 0 && count < 3) warning = ` ⚠ Kun ${count} Ceph-node(r) valgt - Ceph anbefaler mindst 3.`;
+  if (count > 0 && size > count) warning += ` ⚠ Replika size (${size}) er større end antal Ceph-noder (${count}).`;
+  info.innerHTML = 'Vælg under hver node om den skal bruges i Ceph. Ceph-netværket beregnes automatisk ud fra nodernes IP. '
+    + 'Cluster og Ceph oprettes automatisk når alle noder er installeret.'
+    + (warning ? `<br><b style="color: #b45309;">${warning}</b>` : '');
+}
+
+document.getElementById('bm-create-cluster').addEventListener('change', updateClusterVisibility);
+['bm-ceph-size', 'bm-ceph-min-size'].forEach(id => {
+  document.getElementById(id).addEventListener('input', (e) => {
+    e.target.dataset.edited = 'true';
+    refreshCephDefaults();
+  });
+});
+
 // Hjælpefunktion til at tilføje OSD Dropdown
 function addOsdDropdown(nodeIdx, optionsHtml = '') {
   const container = document.querySelector(`.node-card[data-index="${nodeIdx}"] .ceph-dropdown-container`);
@@ -462,12 +625,14 @@ async function checkDiscoveredDisks() {
     const res = await fetch('/api/baremetal/nodes');
     const data = await res.json();
     if (!data.nodes) return;
+    renderProgress(data);
 
     document.querySelectorAll('.node-card').forEach(card => {
       const macInput = card.querySelector('.bm-node-mac').value.toLowerCase().trim();
       if (!macInput) return;
 
       const matchingNode = data.nodes.find(n => n.mac_address && n.mac_address.toLowerCase() === macInput);
+      renderNodeStatus(card, matchingNode);
 
       if (matchingNode && matchingNode.discovered_disks && matchingNode.discovered_disks.length > 0) {
         const statusBadge = card.querySelector('.discovery-status');
@@ -520,6 +685,72 @@ async function checkDiscoveredDisks() {
   }
 }
 
+const NODE_STATUS_LABELS = {
+  waiting_discovery: ['Afventer discovery', '#856404'],
+  discovered: ['Diske fundet', '#155724'],
+  waiting_install: ['Afventer genstart til installation', '#856404'],
+  install_requested: ['Genstarter til installation', '#004085'],
+  installing: ['Installerer Proxmox', '#004085'],
+  installed: ['Proxmox installeret - første opstart', '#004085'],
+  ready: ['Klar', '#155724'],
+  clustered: ['I cluster', '#155724'],
+  ceph_ready: ['Cluster + Ceph klar', '#155724'],
+  error: ['Fejl', '#dc3545']
+};
+
+function renderNodeStatus(card, node) {
+  const line = card.querySelector('.node-status');
+  if (!node || !node.status || node.status === 'waiting_discovery' || node.status === 'discovered') {
+    line.style.display = 'none';
+    return;
+  }
+  const [label, color] = NODE_STATUS_LABELS[node.status] || [node.status, '#333'];
+  line.style.display = 'block';
+  line.style.color = color;
+  line.textContent = `Status: ${node.status_message || label}`;
+}
+
+function renderProgress(data) {
+  const box = document.getElementById('bm-progress');
+  if (data.mode !== 'install') {
+    box.style.display = 'none';
+    return;
+  }
+  box.style.display = 'block';
+  box.style.background = data.phase === 'error' ? '#f8d7da' : '#e7f1ff';
+  document.getElementById('bm-phase-message').textContent = `Installation: ${data.phase_message || data.phase || ''}`;
+
+  const cluster = data.cluster || {};
+  const clusterLine = document.getElementById('bm-cluster-message');
+  const retryButton = document.getElementById('btn-retry-cluster');
+  const logBox = document.getElementById('bm-cluster-log-box');
+  if (!data.create_cluster || cluster.status === 'disabled') {
+    clusterLine.textContent = '';
+    retryButton.style.display = 'none';
+    logBox.style.display = 'none';
+    return;
+  }
+  const clusterLabels = {
+    pending: 'Venter på at alle noder er installeret',
+    running: 'Opretter...',
+    done: 'Færdig',
+    error: 'Fejlet'
+  };
+  clusterLine.textContent = `Cluster/Ceph: ${clusterLabels[cluster.status] || cluster.status || ''}${cluster.message ? ' - ' + cluster.message : ''}`;
+  clusterLine.style.color = cluster.status === 'error' ? '#dc3545' : '';
+  retryButton.style.display = cluster.status === 'error' ? 'inline-block' : 'none';
+  const log = cluster.log || [];
+  logBox.style.display = log.length ? 'block' : 'none';
+  document.getElementById('bm-cluster-log').textContent = log.join('\n');
+}
+
+document.getElementById('btn-retry-cluster').addEventListener('click', async () => {
+  const res = await fetch('/api/baremetal/cluster/retry', { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) alert(data.detail || 'Kunne ikke starte cluster-opsætning igen.');
+  checkDiscoveredDisks();
+});
+
 // Tjek for diske hvert 3. sekund
 setInterval(checkDiscoveredDisks, 3000);
 
@@ -571,7 +802,7 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
     alert(data.detail || data.message || "Discovery PXE kunne ikke startes.");
     return;
   }
-  alert("Discovery PXE startet! Tænd nu serverne så de kan hente Micro-Image'et og rapportere deres diske.");
+  alert("Discovery PXE startet! Tænd nu serverne. De rapporterer deres diske og bliver derefter tændt og venter, indtil du starter Proxmox installationen.");
 });
 
 // 2. Start Proxmox Auto-Installation
@@ -582,11 +813,12 @@ document.getElementById('btn-start-pxe').addEventListener('click', async () => {
     return;
   }
 
+  const createCluster = isClusterEnabled();
   const nodes = [];
   document.querySelectorAll('.node-card').forEach(card => {
-    const cephToggle = card.querySelector('.bm-ceph-toggle').checked;
+    const cephToggle = createCluster && card.querySelector('.bm-ceph-toggle').checked;
     const osdSelects = card.querySelectorAll('.bm-ceph-osd-select');
-    const selectedCephDisks = Array.from(osdSelects).map(s => s.value).filter(v => v !== "");
+    const selectedCephDisks = cephToggle ? Array.from(osdSelects).map(s => s.value).filter(v => v !== "") : [];
 
     nodes.push({
       hostname: card.querySelector('.bm-node-host').value,
@@ -604,8 +836,24 @@ document.getElementById('btn-start-pxe').addEventListener('click', async () => {
     dns: document.getElementById('bm-dns').value,
     root_password: document.getElementById('bm-password').value,
     selected_iso: selectedIso,
+    domain: document.getElementById('bm-domain').value.trim(),
+    mailto: document.getElementById('bm-mailto').value.trim(),
+    filesystem: document.getElementById('bm-filesystem').value,
+    keyboard: document.getElementById('bm-keyboard').value.trim(),
+    country: document.getElementById('bm-country').value.trim().toLowerCase(),
+    timezone: document.getElementById('bm-timezone').value.trim(),
+    create_cluster: createCluster,
+    cluster_name: document.getElementById('bm-cluster-name').value.trim(),
+    ceph_pool: document.getElementById('bm-ceph-pool').value.trim(),
+    ceph_size: parseInt(document.getElementById('bm-ceph-size').value) || 3,
+    ceph_min_size: parseInt(document.getElementById('bm-ceph-min-size').value) || 2,
     nodes: nodes
   };
+
+  const osDisks = nodes.map(n => `${n.hostname || n.mac_address}: ${n.disk}${n.enable_ceph ? ' + OSD ' + n.ceph_disks.join(', ') : ''}`).join('\n');
+  if (!confirm(`ADVARSEL: Følgende diske bliver SLETTET og Proxmox installeres:\n\n${osDisks}\n\nFortsæt?`)) {
+    return;
+  }
 
   const res = await fetch('/api/baremetal/start', {
     method: 'POST',
@@ -619,6 +867,7 @@ document.getElementById('btn-start-pxe').addEventListener('click', async () => {
     return;
   }
   alert(data.message || 'Proxmox PXE Installation startet!');
+  checkDiscoveredDisks();
 });
 
 // Stop PXE
