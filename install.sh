@@ -87,7 +87,7 @@ find "$FRONTEND_DEPLOY_DIR" -type d -exec chmod 0755 {} +
 find "$FRONTEND_DEPLOY_DIR" -type f -exec chmod 0644 {} +
 
 echo "==> [4/8] Opretter storage-mapper og PXE-boot filer..."
-mkdir -p "$STORAGE_DIR/isos" "$STORAGE_DIR/extracted" "$STORAGE_DIR/discovery" "$STORAGE_DIR/tftpboot"
+mkdir -p "$STORAGE_DIR/isos/proxmox" "$STORAGE_DIR/isos/ubuntu" "$STORAGE_DIR/extracted" "$STORAGE_DIR/discovery" "$STORAGE_DIR/tftpboot"
 
 # Fuld ipxe.efi (egne NIC-drivere): snponly.efi deler netkortet med firmwarens
 # netværksstack og modtager på nogle maskiner aldrig DHCP-svar ("Configuring net0").
@@ -112,8 +112,7 @@ if [[ -f "$STORAGE_DIR/discovery/discovery-script.sh" ]]; then
 fi
 
 if [[ ! -f "$STORAGE_DIR/discovery/vmlinuz" || ! -f "$STORAGE_DIR/discovery/initrd" || ! -f "$STORAGE_DIR/discovery/ubuntu-live.iso" ]]; then
-    echo "    NB: storage/discovery/vmlinuz + initrd + ubuntu-live.iso mangler."
-    echo "    Kør 'sudo ./scripts/prepare-discovery-image.sh /sti/til/ubuntu-live-server.iso' for at generere dem."
+    echo "    NB: Discovery-image mangler - upload en Ubuntu Server live ISO på portalens setup-side."
 fi
 
 echo "==> [5/8] Deaktiverer system-dnsmasq (portalen starter selv sin egen dnsmasq-proces)..."
@@ -150,6 +149,8 @@ server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    # ISO-filer (flere GB) uploades via setup-siden.
+    client_max_body_size 0;
 
     root ${FRONTEND_DEPLOY_DIR};
     index index.html;
@@ -163,6 +164,10 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # Stream store uploads direkte til backend i stedet for at buffre dem på disk.
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 }
 EOF
@@ -183,8 +188,8 @@ echo " Installation færdig."
 echo " Portal:  http://<server-ip>/"
 echo " Backend: http://<server-ip>:${BACKEND_PORT}/ (proxy'et via nginx på port 80)"
 echo ""
-echo " Læg Proxmox ISO-filer i:   ${STORAGE_DIR}/isos/"
-echo " Discovery boot-image:      sudo ./scripts/prepare-discovery-image.sh <iso>"
+echo " Åbn portalen og upload/download Proxmox- og Ubuntu-ISO'en på setup-siden."
+echo " (Manuelt: Proxmox i ${STORAGE_DIR}/isos/proxmox/, Ubuntu via scripts/prepare-discovery-image.sh)"
 echo ""
 echo " Se logs med: journalctl -u ${SERVICE_NAME} -f"
 echo "==================================================================="

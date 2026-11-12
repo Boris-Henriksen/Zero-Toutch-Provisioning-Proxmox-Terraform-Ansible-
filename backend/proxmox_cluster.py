@@ -102,8 +102,118 @@ def wait_for_api(host: str, password: str, timeout: int = 900) -> ProxmoxAPI:
     raise ProxmoxError(f"Proxmox API på {host} svarer ikke: {last_error}")
 
 
+def verify_storage_active(apis: dict, nodes: list, storage: str, log: Callable[[str], None], timeout: int = 120):
+    """Ceph kan være sund selvom Proxmox' storage-lag ikke kan bruge poolen (f.eks. gammel libpve-storage-perl)."""
+    log(f"Tjekker at storage '{storage}' er aktiv på alle noder...")
+    pending = {node["hostname"] for node in nodes}
+    errors = {}
+    deadline = time.time() + timeout
+    while pending and time.time() < deadline:
+        for name in sorted(pending):
+            try:
+                status = apis[name].get(f"/nodes/{name}/storage/{storage}/status", timeout=30) or {}
+                if status.get("active"):
+                    pending.discard(name)
+                    continue
+                errors[name] = "storage er ikke aktiv"
+            except ProxmoxError as error:
+                errors[name] = str(error)[-200:]
+        if pending:
+            time.sleep(10)
+    if pending:
+        details = "; ".join(f"{name}: {errors.get(name, 'ukendt')}" for name in sorted(pending))
+        raise ProxmoxError(f"Ceph er oprettet, men storage '{storage}' er ikke aktiv på {details}. "
+                           "Tjek 'pvesm status' og at libpve-storage-perl er opdateret på noden.")
+
+
 def ceph_public_network(nodes: list, prefix_length: int) -> str:
     return str(ipaddress.IPv4Interface(f"{nodes[0]['ip']}/{prefix_length}").network)
+
+
+def wait_for_quorum(api: ProxmoxAPI, node_name: str, log: Callable[[str], None], timeout: int = 180):
+    """Et nyt cluster (eller lige efter et join) har ikke quorum med det samme - joins før det fejler."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            status = api.get("/cluster/status", timeout=30) or []
+            if any(e.get("type") == "cluster" and e.get("quorate") for e in status):
+                return
+        except ProxmoxError:
+            pass
+        time.sleep(5)
+    raise ProxmoxError(f"Clusteret på {node_name} fik ikke quorum inden for {timeout} sekunder")
+
+
+def online_members(api: ProxmoxAPI) -> set:
+    return {e.get("name") for e in (api.get("/cluster/status", timeout=30) or []) if e.get("type") == "node" and e.get("online")}
+
+
+def join_node(main_api: ProxmoxAPI, node_api: ProxmoxAPI, first: dict, node: dict, password: str,
+              log: Callable[[str], None], attempts: int = 3):
+    """Join via noden's API og følg join-tasken, så en fejl vises med Proxmox' egen besked."""
+    name = node["hostname"]
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        log(f"Tilføjer {name} til clusteret (forsøg {attempt}/{attempts})...")
+        join_info = main_api.get("/cluster/config/join") or {}
+        fingerprint = next(
+            (e.get("pve_fp") for e in join_info.get("nodelist", []) if e.get("name") == first["hostname"]),
+            None,
+        )
+        if not fingerprint:
+            raise ProxmoxError(f"Kunne ikke hente certifikat-fingerprint fra {first['hostname']}")
+
+        upid = None
+        try:
+            upid = node_api.post("/cluster/config/join", {
+                "hostname": first["ip"],
+                "password": password,
+                "fingerprint": fingerprint,
+                "link0": node["ip"],
+            })
+        except ProxmoxError as error:
+            # pveproxy på den joinende node genstarter undervejs - forbindelsen kan blive afbrudt.
+            log(f"(join-svar fra {name}: {error})")
+            if "already" in str(error).lower() or "exists" in str(error).lower():
+                raise ProxmoxError(f"{name} kan ikke joine: {error}") from None
+
+        deadline = time.time() + 600
+        while time.time() < deadline:
+            time.sleep(10)
+            try:
+                if name in online_members(main_api):
+                    log(f"{name} er med i clusteret")
+                    return
+            except ProxmoxError:
+                pass
+            if not isinstance(upid, str):
+                continue
+            # Efter et (delvist) join skifter nodens auth-nøgle - log ind igen hvis billetten er ugyldig.
+            task_path = f"/nodes/{name}/tasks/{urllib.parse.quote(upid, safe='')}"
+            try:
+                status = node_api.get(task_path + "/status", timeout=30)
+            except ProxmoxError:
+                try:
+                    node_api.login()
+                    status = node_api.get(task_path + "/status", timeout=30)
+                except ProxmoxError:
+                    continue
+            if status and status.get("status") == "stopped" and status.get("exitstatus") != "OK":
+                try:
+                    task_log = node_api.get(task_path + "/log", {"limit": 50}) or []
+                    tail = " | ".join(line.get("t", "") for line in task_log[-6:] if line.get("t"))
+                except ProxmoxError:
+                    tail = ""
+                last_error = f"{status.get('exitstatus')} {tail}".strip()
+                log(f"Join af {name} fejlede: {last_error}")
+                break
+        else:
+            last_error = "noden blev ikke online i clusteret inden for 10 minutter"
+            log(f"Join af {name}: {last_error}")
+        if attempt < attempts:
+            time.sleep(20)
+            wait_for_quorum(main_api, first["hostname"], log)
+    raise ProxmoxError(f"{name} kunne ikke joine clusteret: {last_error}")
 
 
 def build_cluster(session: dict, password: str, log: Callable[[str], None], set_node_status: Callable[[str, str, str], None]):
@@ -121,41 +231,14 @@ def build_cluster(session: dict, password: str, log: Callable[[str], None], set_
         log(f"Opretter cluster '{session['cluster_name']}' på {first_name}...")
         upid = main_api.post("/cluster/config", {"clustername": session["cluster_name"]})
         main_api.wait_task(first_name, upid)
+    wait_for_quorum(main_api, first_name, log)
     set_node_status(first["mac_address"], "clustered", "I cluster")
 
     for node in nodes[1:]:
         members = {entry.get("name") for entry in (main_api.get("/cluster/status") or []) if entry.get("type") == "node"}
         if node["hostname"] not in members:
-            log(f"Tilføjer {node['hostname']} til clusteret...")
-            join_info = main_api.get("/cluster/config/join") or {}
-            fingerprint = next(
-                (entry.get("pve_fp") for entry in join_info.get("nodelist", []) if entry.get("name") == first_name),
-                None,
-            )
-            if not fingerprint:
-                raise ProxmoxError(f"Kunne ikke hente certifikat-fingerprint fra {first_name}")
-            try:
-                apis[node["hostname"]].post("/cluster/config/join", {
-                    "hostname": first["ip"],
-                    "password": password,
-                    "fingerprint": fingerprint,
-                    "link0": node["ip"],
-                })
-            except ProxmoxError as error:
-                # pveproxy på den joinende node genstarter undervejs - forbindelsen kan blive afbrudt.
-                log(f"(join-svar fra {node['hostname']}: {error})")
-
-            deadline = time.time() + 600
-            while time.time() < deadline:
-                time.sleep(10)
-                try:
-                    members = {e.get("name") for e in (main_api.get("/cluster/status") or []) if e.get("type") == "node" and e.get("online")}
-                except ProxmoxError:
-                    continue
-                if node["hostname"] in members:
-                    break
-            else:
-                raise ProxmoxError(f"{node['hostname']} blev ikke online i clusteret")
+            join_node(main_api, apis[node["hostname"]], first, node, password, log)
+            wait_for_quorum(main_api, first_name, log)
         set_node_status(node["mac_address"], "clustered", "I cluster")
 
     # Ticket fra første node gælder i hele clusteret; /nodes/<navn>/... proxies til den rigtige node.
@@ -224,6 +307,8 @@ def build_cluster(session: dict, password: str, log: Callable[[str], None], set_
             "pg_autoscale_mode": "on",
             "add_storages": 1,
         }))
+
+    verify_storage_active(apis, nodes, session["ceph_pool"], log)
 
     for node in ceph_nodes:
         set_node_status(node["mac_address"], "ceph_ready", "Cluster + Ceph klar")

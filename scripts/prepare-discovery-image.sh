@@ -54,8 +54,11 @@ cp "$MOUNT_POINT/casper/vmlinuz" "$DISCOVERY_DIR/vmlinuz"
 cp "$MOUNT_POINT/casper/initrd" "$DISCOVERY_DIR/initrd"
 
 # casper henter selve live-rootfs'et fra ISO'en via url= ved netboot.
-echo "==> Kopierer ISO til $DISCOVERY_DIR/ubuntu-live.iso (bruges som rootfs via HTTP) ..."
-cp "$ISO_PATH" "$DISCOVERY_DIR/ubuntu-live.iso"
+# Hardlink frem for kopi (sparer ~3 GB) når ISO'en ligger på samme filsystem, f.eks. storage/isos/ubuntu/.
+echo "==> Lægger ISO'en som $DISCOVERY_DIR/ubuntu-live.iso (bruges som rootfs via HTTP) ..."
+if [[ ! "$ISO_PATH" -ef "$DISCOVERY_DIR/ubuntu-live.iso" ]]; then
+    ln -f "$ISO_PATH" "$DISCOVERY_DIR/ubuntu-live.iso" 2>/dev/null || cp "$ISO_PATH" "$DISCOVERY_DIR/ubuntu-live.iso"
+fi
 chmod 644 "$DISCOVERY_DIR/vmlinuz" "$DISCOVERY_DIR/initrd" "$DISCOVERY_DIR/ubuntu-live.iso"
 
 if [[ -f "$DISCOVERY_DIR/discovery-script.sh" ]]; then
@@ -63,3 +66,4 @@ if [[ -f "$DISCOVERY_DIR/discovery-script.sh" ]]; then
 fi
 
 echo "==> Færdig. Discovery-image er klar i $DISCOVERY_DIR"
+basename "$ISO_PATH" > "$DISCOVERY_DIR/source.txt"

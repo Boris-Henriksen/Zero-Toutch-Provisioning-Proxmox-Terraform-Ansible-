@@ -1,3 +1,6 @@
+import { createCombobox, KEYBOARD_OPTIONS, COUNTRY_OPTIONS, TIMEZONE_OPTIONS } from './combobox.js';
+import { initSetup } from './setup.js';
+
 const availableVMs = [
   { id: "zabbix", name: "Zabbix" },
   { id: "ca-server", name: "CA-Server" },
@@ -13,8 +16,15 @@ const availableVMs = [
 ];
 
 document.querySelector('#app').innerHTML = `
-  <div style="max-width: 950px; margin: 2rem auto; font-family: sans-serif;">
-    <h2>Infrastruktur Portal</h2>
+  <style>
+    @keyframes node-progress-stripes { from { background-position: 16px 0; } to { background-position: 0 0; } }
+  </style>
+  <div id="setup-page" style="display: none;"></div>
+  <div id="portal-page" style="display: none; max-width: 950px; margin: 2rem auto; font-family: sans-serif;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <h2>Infrastruktur Portal</h2>
+      <button id="btn-open-setup" style="padding: 6px 12px; cursor: pointer;">Setup / ISO-filer</button>
+    </div>
 
     <!-- Trin-Vælger -->
     <div style="display: flex; gap: 10px; margin-bottom: 2rem;">
@@ -74,15 +84,15 @@ document.querySelector('#app').innerHTML = `
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr 2fr; gap: 0.5rem; width: 95%;">
           <div>
-            <label><b>Tastatur:</b></label><br>
+            <label for="bm-keyboard"><b>Tastatur:</b></label><br>
             <input type="text" id="bm-keyboard" value="dk" disabled style="padding: 6px; width: 80%;">
           </div>
           <div>
-            <label><b>Land:</b></label><br>
+            <label for="bm-country"><b>Land:</b></label><br>
             <input type="text" id="bm-country" value="dk" disabled style="padding: 6px; width: 80%;">
           </div>
           <div>
-            <label><b>Tidszone:</b></label><br>
+            <label for="bm-timezone"><b>Tidszone:</b></label><br>
             <input type="text" id="bm-timezone" value="Europe/Copenhagen" disabled style="padding: 6px; width: 90%;">
           </div>
         </div>
@@ -131,8 +141,10 @@ document.querySelector('#app').innerHTML = `
       </div>
 
       <div id="bm-progress" style="display: none; margin-bottom: 1rem; padding: 0.8rem 1rem; border-radius: 6px; border: 1px solid #b8daff; background: #e7f1ff; font-size: 14px;">
+        <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px;">Installationsstatus</div>
         <div id="bm-phase-message"></div>
-        <div id="bm-cluster-message" style="margin-top: 4px;"></div>
+        <div id="bm-node-progress-list"></div>
+        <div id="bm-cluster-message" style="margin-top: 10px;"></div>
         <button id="btn-retry-cluster" style="display: none; margin-top: 6px; padding: 4px 10px; cursor: pointer;">Prøv cluster-opsætning igen</button>
         <details id="bm-cluster-log-box" style="display: none; margin-top: 6px;">
           <summary style="cursor: pointer; font-size: 12px;">Vis log</summary>
@@ -147,10 +159,11 @@ document.querySelector('#app').innerHTML = `
         <button id="btn-start-pxe" disabled style="padding: 10px 20px; background: #28a745; color: white; border: none; cursor: pointer; font-weight: bold;">
           2. Start Proxmox Auto-Installation
         </button>
-        <button id="btn-stop-pxe" style="padding: 10px 20px; background: #dc3545; color: white; border: none; cursor: pointer;">
-          Stop PXE Tjeneste
+        <button id="btn-reset" style="margin-left: auto; padding: 10px 20px; background: #dc3545; color: white; border: none; cursor: pointer;">
+          Slet konfiguration og start forfra
         </button>
       </div>
+      <div id="bm-lock-info" style="display: none; margin-top: 0.6rem; font-size: 13px; color: #555;"></div>
     </div>
 
     <!-- STEP 2 SEKTION -->
@@ -215,6 +228,12 @@ document.querySelector('#app').innerHTML = `
   </div>
 `;
 
+const localeComboboxes = [
+  createCombobox(document.getElementById('bm-keyboard'), KEYBOARD_OPTIONS),
+  createCombobox(document.getElementById('bm-country'), COUNTRY_OPTIONS),
+  createCombobox(document.getElementById('bm-timezone'), TIMEZONE_OPTIONS)
+];
+
 // Hent ISO-versioner
 async function loadIsoVersions() {
   const select = document.getElementById('bm-iso-version');
@@ -228,13 +247,16 @@ async function loadIsoVersions() {
       if (savedIso && data.versions.includes(savedIso)) select.value = savedIso;
       else if (proxmoxIso) select.value = proxmoxIso;
     } else {
-      select.innerHTML = '<option value="">Ingen .iso filer fundet i storage/isos/</option>';
+      select.innerHTML = '<option value="">Ingen Proxmox ISO - tilføj en via "Setup / ISO-filer"</option>';
     }
   } catch (err) {
     select.innerHTML = '<option value="">Fejl ved indlæsning af ISO-filer</option>';
   }
 }
 loadIsoVersions();
+
+const setup = initSetup({ onShowPortal: loadIsoVersions });
+document.getElementById('btn-open-setup').addEventListener('click', () => setup.open());
 
 // Fanebladsskift
 const sec1 = document.getElementById('section-step1');
@@ -381,6 +403,7 @@ async function restoreState() {
       ['domain', 'mailto', 'filesystem', 'keyboard', 'country', 'timezone'].forEach(key => {
         if (g[key]) document.getElementById(`bm-${key}`).value = g[key];
       });
+      localeComboboxes.forEach(c => c.refresh());
       applyClusterState(state.cluster);
 
       const nodes = state.nodes || [];
@@ -458,7 +481,6 @@ function renderNodeRows(count) {
             </span>
           </div>
         </div>
-        <div class="node-status" style="display: none; font-size: 12px; margin: -0.4rem 0 0.6rem 0; color: #004085;"></div>
 
         <!-- System- & Netværksindstillinger (Skjult indtil Discovery) -->
         <div class="config-section" style="border-top: 1px solid #eee; padding-top: 0.8rem; margin-top: 0.5rem; opacity: 0.6;">
@@ -523,24 +545,45 @@ function renderNodeRows(count) {
   updateProvisioningGate();
 }
 
+let installState = 'open';
+
 function updateProvisioningGate() {
   const cards = Array.from(document.querySelectorAll('.node-card'));
   const allDiscovered = cards.length > 0 && cards.every(card => card.dataset.discovered === 'true');
   const generalSettings = document.getElementById('bm-general-settings');
+  const locked = installState === 'locked';
 
-  generalSettings.style.opacity = allDiscovered ? '1' : '0.55';
+  generalSettings.style.opacity = allDiscovered && !locked ? '1' : '0.55';
   generalSettings.querySelectorAll('input, select').forEach(input => {
-    input.disabled = !allDiscovered;
+    input.disabled = !allDiscovered || locked;
   });
-  document.getElementById('btn-start-pxe').disabled = !allDiscovered;
+  document.getElementById('btn-start-pxe').disabled = !allDiscovered || locked;
 
   cards.forEach(card => {
-    const enabled = allDiscovered && card.dataset.discovered === 'true';
+    const enabled = allDiscovered && card.dataset.discovered === 'true' && !locked;
     card.querySelector('.config-section').style.opacity = enabled ? '1' : '0.6';
     card.querySelectorAll('.bm-node-host, .bm-node-ip, .bm-node-disk, .bm-ceph-toggle').forEach(input => {
       input.disabled = !enabled;
     });
   });
+
+  // Under installationen må intet ændres i Step 1 - kun "start forfra" og cluster-retry virker.
+  const section = document.getElementById('section-step1');
+  section.querySelectorAll('.bm-node-mac, .bm-ceph-osd-select, .btn-add-osd, .ceph-dropdown-container button, #bm-node-count, #btn-render-nodes, #btn-start-discovery')
+    .forEach(el => { el.disabled = locked; });
+  document.getElementById('bm-nodes-container').style.opacity = locked ? '0.7' : '1';
+  const info = document.getElementById('bm-lock-info');
+  const readyCount = cards.filter(card => card.dataset.discovered === 'true').length;
+  info.style.display = installState === 'open' && allDiscovered ? 'none' : 'block';
+  if (installState === 'open') {
+    info.textContent = `"Start Proxmox Auto-Installation" åbner når alle ${cards.length} node(r) er discovered og har rapporteret klar (${readyCount}/${cards.length} klar).`;
+    info.style.color = '#555';
+    return;
+  }
+  info.textContent = locked
+    ? 'Installationen er i gang - indstillingerne er låst. Brug "Slet konfiguration og start forfra" for at starte helt forfra.'
+    : 'En eller flere noder fejlede - ret indstillingerne og tryk "Start Proxmox Auto-Installation" igen. Allerede installerede noder springes over. Fejlede noder skal netværksbootes (PXE) igen.';
+  info.style.color = locked ? '#555' : '#b02a37';
 }
 
 function isClusterEnabled() {
@@ -629,54 +672,59 @@ async function checkDiscoveredDisks() {
 
     document.querySelectorAll('.node-card').forEach(card => {
       const macInput = card.querySelector('.bm-node-mac').value.toLowerCase().trim();
-      if (!macInput) return;
+      const matchingNode = macInput && data.nodes.find(n => n.mac_address && n.mac_address.toLowerCase() === macInput);
 
-      const matchingNode = data.nodes.find(n => n.mac_address && n.mac_address.toLowerCase() === macInput);
-      renderNodeStatus(card, matchingNode);
-
-      if (matchingNode && matchingNode.discovered_disks && matchingNode.discovered_disks.length > 0) {
+      if (!matchingNode || !matchingNode.discovered_disks || matchingNode.discovered_disks.length === 0) {
+        // Ikke (længere) rapporteret - f.eks. ny MAC eller portalen er nulstillet.
         const statusBadge = card.querySelector('.discovery-status');
-        const configSection = card.querySelector('.config-section');
-        const hostInput = card.querySelector('.bm-node-host');
-        const ipInput = card.querySelector('.bm-node-ip');
-        const osSelect = card.querySelector('.bm-node-disk');
-        const cephToggle = card.querySelector('.bm-ceph-toggle');
+        statusBadge.innerText = 'Afventer Discovery...';
+        statusBadge.style.background = '#fff3cd';
+        statusBadge.style.color = '#856404';
+        card.dataset.discovered = 'false';
+        return;
+      }
 
-        // Opdater status badge og gennemsigtighed
-        statusBadge.innerText = `Klar til install (${matchingNode.discovered_disks.length} diske fundet)`;
-        statusBadge.style.background = '#d4edda';
-        statusBadge.style.color = '#155724';
-        card.dataset.discovered = 'true';
+      const statusBadge = card.querySelector('.discovery-status');
+      const configSection = card.querySelector('.config-section');
+      const hostInput = card.querySelector('.bm-node-host');
+      const ipInput = card.querySelector('.bm-node-ip');
+      const osSelect = card.querySelector('.bm-node-disk');
+      const cephToggle = card.querySelector('.bm-ceph-toggle');
 
-        const currentOsVal = osSelect.value;
+      // Opdater status badge og gennemsigtighed
+      statusBadge.innerText = `Klar til install (${matchingNode.discovered_disks.length} diske fundet)`;
+      statusBadge.style.background = '#d4edda';
+      statusBadge.style.color = '#155724';
+      card.dataset.discovered = 'true';
 
-        // Indsæt fundne diske i dropdown
-        let diskOptionsHtml = matchingNode.discovered_disks.map(d => 
-          `<option value="${d.name}">${d.name} (${d.size} - ${d.model})</option>`
-        ).join('');
+      const currentOsVal = osSelect.value;
 
-        osSelect.innerHTML = diskOptionsHtml;
-        const wantedOsVal = currentOsVal || card.dataset.savedDisk;
-        if (wantedOsVal && matchingNode.discovered_disks.some(d => d.name === wantedOsVal)) {
-          osSelect.value = wantedOsVal;
+      // Indsæt fundne diske i dropdown
+      let diskOptionsHtml = matchingNode.discovered_disks.map(d => 
+        `<option value="${d.name}">${d.name} (${d.size} - ${d.model})</option>`
+      ).join('');
+
+      osSelect.innerHTML = diskOptionsHtml;
+      const wantedOsVal = currentOsVal || card.dataset.savedDisk;
+      if (wantedOsVal && matchingNode.discovered_disks.some(d => d.name === wantedOsVal)) {
+        osSelect.value = wantedOsVal;
+      }
+
+      // Gem options til brug for Ceph
+      card.setAttribute('data-disk-options', diskOptionsHtml);
+
+      const cephContainer = card.querySelector('.ceph-dropdown-container');
+      if (cephContainer.children.length === 0) {
+        const savedCephDisks = JSON.parse(card.dataset.savedCephDisks || '[]');
+        if (savedCephDisks.length === 0) {
+          addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
+        } else {
+          savedCephDisks.forEach(diskName => {
+            const select = addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
+            select.value = diskName;
+          });
         }
-
-        // Gem options til brug for Ceph
-        card.setAttribute('data-disk-options', diskOptionsHtml);
-
-        const cephContainer = card.querySelector('.ceph-dropdown-container');
-        if (cephContainer.children.length === 0) {
-          const savedCephDisks = JSON.parse(card.dataset.savedCephDisks || '[]');
-          if (savedCephDisks.length === 0) {
-            addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
-          } else {
-            savedCephDisks.forEach(diskName => {
-              const select = addOsdDropdown(card.getAttribute('data-index'), diskOptionsHtml);
-              select.value = diskName;
-            });
-          }
-          saveState();
-        }
+        saveState();
       }
     });
     updateProvisioningGate();
@@ -685,40 +733,88 @@ async function checkDiscoveredDisks() {
   }
 }
 
-const NODE_STATUS_LABELS = {
-  waiting_discovery: ['Afventer discovery', '#856404'],
-  discovered: ['Diske fundet', '#155724'],
-  waiting_install: ['Afventer genstart til installation', '#856404'],
-  install_requested: ['Genstarter til installation', '#004085'],
-  installing: ['Installerer Proxmox', '#004085'],
-  installed: ['Proxmox installeret - første opstart', '#004085'],
-  ready: ['Klar', '#155724'],
-  clustered: ['I cluster', '#155724'],
-  ceph_ready: ['Cluster + Ceph klar', '#155724'],
-  error: ['Fejl', '#dc3545']
-};
-
-function renderNodeStatus(card, node) {
-  const line = card.querySelector('.node-status');
-  if (!node || !node.status || node.status === 'waiting_discovery' || node.status === 'discovered') {
-    line.style.display = 'none';
-    return;
+// Samlet fremskridt for én node: genstart til PXE -> hent installer -> installation -> første opstart -> klar.
+function nodeProgressStep(node) {
+  const msg = node.status_message;
+  switch (node.status) {
+    case 'waiting_install':
+      return { percent: 3, text: 'Venter på at installeren bliver klar...', busy: true };
+    case 'install_requested':
+      return { percent: 10, text: msg || 'Genstarter til netværksboot (PXE)...', busy: true };
+    case 'installing':
+      return node.answer_served
+        ? { percent: 50, text: 'Installerer Proxmox på disken...', busy: true }
+        : { percent: 25, text: 'Henter Proxmox installer via PXE...', busy: true };
+    case 'installed':
+      return { percent: 85, text: 'Installeret - første opstart og konfiguration...', busy: true };
+    case 'ready':
+      return { percent: 100, text: msg || 'Klar', done: true };
+    case 'clustered':
+      return { percent: 100, text: 'Klar - i cluster', done: true };
+    case 'ceph_ready':
+      return { percent: 100, text: 'Klar - cluster + Ceph', done: true };
+    case 'error':
+      return { percent: 100, text: msg || 'Fejl', error: true };
+    default:
+      return { percent: 0, text: msg || node.status || '' };
   }
-  const [label, color] = NODE_STATUS_LABELS[node.status] || [node.status, '#333'];
-  line.style.display = 'block';
-  line.style.color = color;
-  line.textContent = `Status: ${node.status_message || label}`;
+}
+
+const STRIPES = 'linear-gradient(45deg, rgba(255,255,255,.25) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%, transparent)';
+
+function renderNodeProgressList(nodes) {
+  const list = document.getElementById('bm-node-progress-list');
+  // Genbrug rækker (pr. MAC) så CSS-animationen ikke genstarter ved hver polling.
+  const keep = new Set();
+  nodes.forEach(node => {
+    const key = node.mac_address.toLowerCase();
+    keep.add(key);
+    let row = list.querySelector(`[data-mac="${key}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.dataset.mac = key;
+      row.style.cssText = 'margin-top: 10px;';
+      row.innerHTML = `
+        <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 3px;">
+          <b class="np-host"></b><span class="np-ip" style="color: #555;"></span>
+        </div>
+        <div style="height: 16px; background: #fff; border: 1px solid #cfd8e3; border-radius: 8px; overflow: hidden;">
+          <div class="np-bar" style="height: 100%; width: 0%; transition: width 0.6s ease; background-size: 16px 16px;"></div>
+        </div>
+        <div class="np-text" style="font-size: 12px; color: #444; margin-top: 2px;"></div>`;
+      list.appendChild(row);
+    }
+    const step = nodeProgressStep(node);
+    row.querySelector('.np-host').textContent = node.hostname;
+    row.querySelector('.np-ip').textContent = `${node.ip} · ${node.mac_address}`;
+    const bar = row.querySelector('.np-bar');
+    bar.style.width = `${Math.min(100, Math.max(0, step.percent))}%`;
+    bar.style.backgroundColor = step.error ? '#dc3545' : step.done ? '#28a745' : '#007bff';
+    bar.style.backgroundImage = step.busy ? STRIPES : 'none';
+    bar.style.animation = step.busy ? 'node-progress-stripes 1s linear infinite' : 'none';
+    const text = row.querySelector('.np-text');
+    text.textContent = `${Math.round(step.percent)}% - ${step.text}`;
+    text.style.color = step.error ? '#dc3545' : '#444';
+  });
+  list.querySelectorAll('[data-mac]').forEach(row => {
+    if (!keep.has(row.dataset.mac)) row.remove();
+  });
 }
 
 function renderProgress(data) {
   const box = document.getElementById('bm-progress');
+  const failed = data.phase === 'error' || (data.nodes || []).some(n => n.status === 'error');
+  // Formularen låses når installationen er startet - åbnes kun igen hvis noget fejler.
+  installState = data.mode === 'install' ? (failed ? 'failed' : 'locked') : 'open';
   if (data.mode !== 'install') {
     box.style.display = 'none';
     return;
   }
   box.style.display = 'block';
-  box.style.background = data.phase === 'error' ? '#f8d7da' : '#e7f1ff';
-  document.getElementById('bm-phase-message').textContent = `Installation: ${data.phase_message || data.phase || ''}`;
+  box.style.background = failed ? '#f8d7da' : '#e7f1ff';
+  const pxe = data.pxe_running ? 'PXE/DHCP kører' : 'PXE/DHCP stoppet';
+  document.getElementById('bm-phase-message').textContent = `${data.phase_message || data.phase || ''} (${pxe})`;
+  renderNodeProgressList(data.nodes || []);
 
   const cluster = data.cluster || {};
   const clusterLine = document.getElementById('bm-cluster-message');
@@ -805,13 +901,75 @@ document.getElementById('btn-start-discovery').addEventListener('click', async (
   alert("Discovery PXE startet! Tænd nu serverne. De rapporterer deres diske og bliver derefter tændt og venter, indtil du starter Proxmox installationen.");
 });
 
+// Tjek at alle felter er udfyldt før installationen startes; markerer manglende felter med rødt.
+function findMissingInstallFields() {
+  document.querySelectorAll('.field-missing').forEach(el => {
+    el.classList.remove('field-missing');
+    el.style.outline = '';
+  });
+  const missing = [];
+  const mark = (el, label) => {
+    el.classList.add('field-missing');
+    el.style.outline = '2px solid #dc3545';
+    missing.push(label);
+  };
+  const isIp = (v) => /^(\d{1,3})(\.\d{1,3}){3}$/.test(v) && v.split('.').every(p => +p <= 255);
+  const byId = (id) => document.getElementById(id);
+
+  if (!byId('bm-iso-version').value) mark(byId('bm-iso-version'), 'Proxmox ISO version');
+  if (!isIp(byId('bm-gateway').value.trim())) mark(byId('bm-gateway'), 'Gateway IP');
+  if (!isIp(byId('bm-dns').value.trim())) mark(byId('bm-dns'), 'DNS IP');
+  if (byId('bm-password').value.length < 8) mark(byId('bm-password'), 'Root password (mindst 8 tegn)');
+  if (!byId('bm-domain').value.trim()) mark(byId('bm-domain'), 'Domæne');
+  if (!byId('bm-mailto').value.includes('@')) mark(byId('bm-mailto'), 'Admin e-mail');
+  [['bm-keyboard', 'Tastatur'], ['bm-country', 'Land'], ['bm-timezone', 'Tidszone']].forEach(([id, label]) => {
+    if (!byId(id).value.trim()) mark(byId(id), label);
+  });
+
+  const cluster = isClusterEnabled();
+  if (cluster) {
+    if (!byId('bm-cluster-name').value.trim()) mark(byId('bm-cluster-name'), 'Clusternavn');
+    if (cephNodeCount() > 0 && !byId('bm-ceph-pool').value.trim()) mark(byId('bm-ceph-pool'), 'Ceph pool-navn');
+  }
+
+  document.querySelectorAll('.node-card').forEach((card, i) => {
+    const name = card.querySelector('.bm-node-host').value.trim() || `Node ${i + 1}`;
+    const host = card.querySelector('.bm-node-host');
+    const ip = card.querySelector('.bm-node-ip');
+    const disk = card.querySelector('.bm-node-disk');
+    if (!host.value.trim()) mark(host, `Node ${i + 1}: Hostname`);
+    if (!isIp(ip.value.trim())) mark(ip, `${name}: Statisk IP`);
+    if (!disk.value) mark(disk, `${name}: OS-disk`);
+    if (cluster && card.querySelector('.bm-ceph-toggle').checked) {
+      const osds = Array.from(card.querySelectorAll('.bm-ceph-osd-select'));
+      const chosen = osds.filter(s => s.value);
+      if (chosen.length === 0) {
+        (osds[0] ? mark(osds[0], `${name}: mindst én OSD-disk til Ceph`) : missing.push(`${name}: mindst én OSD-disk til Ceph`));
+      }
+      if (chosen.some(s => s.value === disk.value)) {
+        mark(chosen.find(s => s.value === disk.value), `${name}: OS-disken kan ikke også være OSD-disk`);
+      }
+    }
+  });
+  return missing;
+}
+
+document.getElementById('app').addEventListener('input', (e) => {
+  if (e.target.classList?.contains('field-missing')) {
+    e.target.classList.remove('field-missing');
+    e.target.style.outline = '';
+  }
+});
+
 // 2. Start Proxmox Auto-Installation
 document.getElementById('btn-start-pxe').addEventListener('click', async () => {
-  const selectedIso = document.getElementById('bm-iso-version').value;
-  if (!selectedIso) {
-    alert('Vælg venligst en Proxmox ISO-fil!');
+  const missing = findMissingInstallFields();
+  if (missing.length > 0) {
+    alert(`Udfyld venligst følgende før installationen kan startes:\n\n- ${missing.join('\n- ')}`);
+    document.querySelector('.field-missing')?.focus();
     return;
   }
+  const selectedIso = document.getElementById('bm-iso-version').value;
 
   const createCluster = isClusterEnabled();
   const nodes = [];
@@ -870,11 +1028,29 @@ document.getElementById('btn-start-pxe').addEventListener('click', async () => {
   checkDiscoveredDisks();
 });
 
-// Stop PXE
-document.getElementById('btn-stop-pxe').addEventListener('click', async () => {
-  const res = await fetch('/api/baremetal/stop', { method: 'POST' });
-  const data = await res.json();
-  alert(data.message || 'PXE Stoppet');
+// Slet al konfiguration og start forfra
+document.getElementById('btn-reset').addEventListener('click', async () => {
+  const warning = 'ADVARSEL: Dette starter HELT forfra:\n\n'
+    + '- Al konfiguration slettes (MAC-adresser, hostnames, IP\'er, diskvalg, root password)\n'
+    + '- PXE/DHCP stoppes, og ALLE igangværende installationer afbrydes\n'
+    + '- Noder der allerede er ved at skrive Proxmox til disken, sletter det igen ved første opstart\n'
+    + '- Alle noder venter derefter på en ny Discovery og rapporterer selv igen\n\n'
+    + 'Færdige noder (Klar) glemmes også i portalen - sæt dem til PXE-boot for at rediscover og geninstallere dem.\n\n'
+    + 'Er du sikker på, at du vil starte helt forfra?';
+  if (!confirm(warning)) return;
+  const res = await fetch('/api/baremetal/reset', { method: 'POST' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    alert(data.detail || 'Kunne ikke nulstille konfigurationen.');
+    return;
+  }
+  restoring = true;
+  try {
+    localStorage.removeItem(STATE_KEY);
+  } catch {
+    // localStorage utilgængelig - ignorer
+  }
+  location.reload();
 });
 
 // Step 2 Submit

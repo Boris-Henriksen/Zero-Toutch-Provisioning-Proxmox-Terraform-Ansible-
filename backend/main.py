@@ -14,9 +14,12 @@ import threading
 import time
 
 import proxmox_cluster
+import setup_assets
+from setup_assets import PROXMOX_ISO_DIR
 
 # 1. Opret FastAPI app
 app = FastAPI()
+app.include_router(setup_assets.router)
 
 # 2. Definer Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,6 +34,8 @@ ISO_DIR.mkdir(parents=True, exist_ok=True)
 EXTRACTED_DIR.mkdir(parents=True, exist_ok=True)
 DISCOVERY_DIR.mkdir(parents=True, exist_ok=True)
 TFTP_DIR.mkdir(parents=True, exist_ok=True)
+# Proxmox-ISO'er ligger i storage/isos/proxmox, Ubuntu (discovery) i storage/isos/ubuntu.
+setup_assets.migrate_isos()
 
 # 4. Mount statiske routes
 app.mount("/proxmox/discovery", StaticFiles(directory=DISCOVERY_DIR), name="discovery")
@@ -105,7 +110,7 @@ def resolve_pxe_interface(interface: Optional[str]) -> str:
 # --- ISO Endpoint ---
 @app.get("/api/proxmox/versions")
 def list_proxmox_versions():
-    iso_files = [f.name for f in ISO_DIR.glob("*.iso")]
+    iso_files = [f.name for f in PROXMOX_ISO_DIR.glob("*.iso")]
     return {"status": "success", "versions": sorted(iso_files, reverse=True)}
 
 
@@ -113,6 +118,8 @@ def list_proxmox_versions():
 SESSION_DIR = Path(os.environ.get("PORTAL_SESSION_DIR", "/tmp/portal_pxe"))
 SESSION_FILE = SESSION_DIR / "nodes.json"
 SECRETS_FILE = SESSION_DIR / "secrets.json"
+# Noder afbrudt af "start forfra" - ligger uden for /tmp, så det overlever en genstart af serveren.
+ABORTED_FILE = STORAGE_DIR / "aborted-nodes.json"
 session_lock = threading.RLock()
 cluster_thread: Optional[threading.Thread] = None
 prepare_thread: Optional[threading.Thread] = None
@@ -252,6 +259,10 @@ def update_cluster(**fields):
 
 def server_url(session: dict) -> str:
     return f"http://{session['server_address']}:8000"
+
+
+# Parametre fra 'prepare-iso --pxe-loader ipxe'; ISO'en indlæses som ekstra initrd med navnet proxmox.iso.
+INSTALLER_CMDLINE = "ramdisk_size=16777216 rw quiet splash=silent proxmox-start-auto-installer"
 
 
 def auto_installer_dir(version: str) -> Path:
@@ -429,22 +440,29 @@ def report_node_disks(mac: str, disks: List[DisksInfo]):
             node["status"] = "discovered"
             node["status_message"] = f"{len(disks)} diske fundet - venter på installation"
         save_session(session)
+    # Noden er tilbage i discovery - en tidligere afbrydelse er dermed håndteret.
+    clear_aborted(mac)
     return {"status": "success", "message": "Diske opdateret"}
 
 
 @app.get("/api/baremetal/next-action/{mac}")
 def next_action(mac: str):
-    """Discovery-imaget poller her efter disk-rapporten. 'install' = genstart ind i Proxmox installeren."""
+    """Discovery-imaget poller her efter disk-rapporten. 'install' = gør OS-disken ikke-bootbar,
+    sæt næste boot til PXE og genstart ind i Proxmox installeren."""
     with session_lock:
         session = load_session()
         node = find_node(session, [mac]) if session else None
         if not node:
-            return {"action": "wait"}
+            # Portalen er nulstillet (eller noden er fjernet): vent på en ny discovery.
+            return {"action": "reset"}
+        if session.get("mode") == "discovery" and not node.get("discovered_disks"):
+            # Ny discovery efter nulstilling: noden kører stadig discovery-imaget og rapporterer igen.
+            return {"action": "report"}
         if session.get("mode") == "install" and session.get("phase") == "installing" and node.get("status") in ("waiting_install", "install_requested"):
             node["status"] = "install_requested"
-            node["status_message"] = "Genstarter til Proxmox installation"
+            node["status_message"] = "Genstarter til netværksboot (PXE)"
             save_session(session)
-            return {"action": "install"}
+            return {"action": "install", "disk": node.get("disk", "")}
     return {"action": "wait"}
 
 
@@ -458,6 +476,7 @@ def get_current_nodes():
         "mode": session.get("mode"),
         "phase": session.get("phase"),
         "phase_message": session.get("phase_message", ""),
+        "pxe_running": session.get("pxe_running", False),
         "create_cluster": session.get("create_cluster", False),
         "cluster": session.get("cluster", {}),
     }
@@ -474,14 +493,14 @@ def start_baremetal_provisioning(data: Step1Data):
             raise HTTPException(status_code=400, detail=f"PXE-bootfiler mangler i {TFTP_DIR}: {', '.join(missing_boot_files)}. Kør install.sh igen.")
         if is_discovery:
             if not all((DISCOVERY_DIR / name).exists() for name in ("vmlinuz", "initrd", DISCOVERY_ISO_NAME)):
-                raise HTTPException(status_code=400, detail="Discovery-image mangler: kør prepare-discovery-image.sh først.")
+                raise HTTPException(status_code=400, detail="Discovery-image mangler: upload Ubuntu Server ISO'en på setup-siden.")
             kernel_description = subprocess.run(
                 ["file", str(DISCOVERY_DIR / "vmlinuz")], capture_output=True, text=True, check=False
             ).stdout.lower()
             if not any(architecture in kernel_description for architecture in ("x86-64", "x86_64", "amd64")):
                 raise HTTPException(status_code=400, detail="Discovery-image er ikke amd64/x86-64. Brug en Ubuntu Server amd64 ISO.")
         else:
-            iso_path = ISO_DIR / data.selected_iso
+            iso_path = PROXMOX_ISO_DIR / Path(data.selected_iso).name
             if not iso_path.exists():
                 raise HTTPException(status_code=404, detail=f"ISO filen {data.selected_iso} blev ikke fundet.")
             if prepare_thread and prepare_thread.is_alive():
@@ -493,6 +512,12 @@ def start_baremetal_provisioning(data: Step1Data):
             node.mac_address = normalize_mac(node.mac_address)
         previous_session = load_session() or {}
         previous = {n["mac_address"]: n for n in previous_session.get("nodes", [])}
+        retry_install = not is_discovery and previous_session.get("mode") == "install"
+
+        if retry_install and not install_failed(previous_session) and not all(
+            n.get("status") in INSTALLED_STATES for n in previous_session.get("nodes", [])
+        ):
+            raise HTTPException(status_code=409, detail="Installationen kører allerede. Den kan kun startes igen hvis en node fejler.")
 
         if not is_discovery:
             validate_install(data, server_address, prefix_len, previous)
@@ -522,9 +547,12 @@ def start_baremetal_provisioning(data: Step1Data):
             if is_discovery:
                 node_dict["status"] = "discovered" if node_dict["discovered_disks"] else "waiting_discovery"
                 node_dict["status_message"] = "Diske fundet" if node_dict["discovered_disks"] else "Afventer discovery"
+            elif retry_install and prev.get("status") in INSTALLED_STATES:
+                # Nyt forsøg efter fejl: allerede installerede noder røres ikke.
+                node_dict = prev
             else:
                 node_dict["status"] = "waiting_install"
-                node_dict["status_message"] = "Afventer genstart til installation"
+                node_dict["status_message"] = "Afventer start af installation"
             session_nodes.append(node_dict)
             conf_lines.append(f"dhcp-host={node.mac_address},{node.hostname},{node.ip},set:known")
 
@@ -553,6 +581,7 @@ def start_baremetal_provisioning(data: Step1Data):
             "version": version_name,
             "phase": "discovery" if is_discovery else "preparing",
             "phase_message": "Discovery kører" if is_discovery else "Forbereder Proxmox installer (ca. 2 min første gang)...",
+            "pxe_running": True,
             "cluster": {"status": "pending" if data.create_cluster else "disabled", "message": "", "log": []},
         })
 
@@ -591,14 +620,82 @@ def start_baremetal_provisioning(data: Step1Data):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/baremetal/stop")
-def stop_baremetal():
+@app.post("/api/baremetal/reset")
+def reset_baremetal():
+    """Stop PXE/DHCP, afbryd igangværende installationer og slet al konfiguration, så man starter forfra med discovery."""
+    stop_pxe()
+    with session_lock:
+        session = load_session()
+        if session and session.get("mode") == "install":
+            aborted = load_aborted()
+            for node in session.get("nodes", []):
+                if node.get("status") not in READY_STATES:
+                    aborted[node["mac_address"]] = {"disk": node.get("disk", ""), "hostname": node.get("hostname", "")}
+            save_aborted(aborted)
+        for path in (SESSION_FILE, SECRETS_FILE, SESSION_DIR / "dnsmasq.conf"):
+            path.unlink(missing_ok=True)
+    return {"status": "reset", "message": "Al konfiguration er slettet - start forfra med Discovery."}
+
+
+def load_aborted() -> dict:
+    try:
+        return json.loads(ABORTED_FILE.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def save_aborted(aborted: dict):
+    ABORTED_FILE.write_text(json.dumps(aborted, indent=2))
+
+
+def aborted_entry(macs) -> Optional[tuple[str, dict]]:
+    aborted = load_aborted()
+    return next(((m.lower(), aborted[m.lower()]) for m in macs if m and m.lower() in aborted), None)
+
+
+def clear_aborted(mac: str):
+    with session_lock:
+        aborted = load_aborted()
+        if aborted.pop(mac.lower(), None) is not None:
+            save_aborted(aborted)
+
+
+@app.get("/api/baremetal/abort-check/{mac}")
+def abort_check(mac: str):
+    """Kaldes først af first-boot scriptet: blev noden afbrudt af 'start forfra' mens den installerede?
+    Afbrydelsen gælder indtil noden har rapporteret fra discovery igen (så ryddes den i report-disks)."""
+    with session_lock:
+        entry = aborted_entry([mac])
+    return {"abort": True, "disk": entry[1].get("disk", "")} if entry else {"abort": False}
+
+
+def install_failed(session: dict) -> bool:
+    return session.get("phase") == "error" or any(n.get("status") == "error" for n in session.get("nodes", []))
+
+
+def stop_pxe():
     global dnsmasq_process
     if dnsmasq_process and dnsmasq_process.poll() is None:
         dnsmasq_process.terminate()
-        dnsmasq_process = None
-        return {"status": "stopped", "message": "PXE/DHCP stoppet - netværk er rent."}
-    return {"status": "not_running"}
+        try:
+            dnsmasq_process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            dnsmasq_process.kill()
+    dnsmasq_process = None
+
+
+def maybe_stop_pxe():
+    """Stop PXE/DHCP automatisk når alle noder er installeret - de bruger derefter statisk IP."""
+    with session_lock:
+        session = load_session()
+        if not session or session.get("mode") != "install" or not session.get("pxe_running"):
+            return
+        if not all(n.get("status") in INSTALLED_STATES for n in session.get("nodes", [])):
+            return
+        session["pxe_running"] = False
+        session["phase_message"] = "Alle noder er installeret - PXE/DHCP er stoppet automatisk."
+        save_session(session)
+    stop_pxe()
 
 
 @app.get("/auto-installer.ipxe")
@@ -636,10 +733,9 @@ boot
     base = f"http://{host}:8000/proxmox/extracted/{session['version']}-auto"
     if node:
         update_node(node["mac_address"], status="installing", status_message="Henter Proxmox installer")
-    # Parametre fra 'prepare-iso --pxe-loader ipxe'; ISO'en indlæses som ekstra initrd med navnet proxmox.iso.
     ipxe_script = f"""#!ipxe
 
-kernel {base}/vmlinuz ramdisk_size=16777216 rw quiet initrd=initrd.img splash=silent proxmox-start-auto-installer
+kernel {base}/vmlinuz initrd=initrd.img {INSTALLER_CMDLINE}
 initrd {base}/initrd.img
 initrd {base}/proxmox.iso proxmox.iso
 boot
@@ -682,6 +778,24 @@ url = {q(base_url + "/api/baremetal/first-boot.sh")}
 """
 
 
+ABORT_ANSWER_TOML = """[global]
+keyboard = "en-us"
+country = "us"
+fqdn = "aborted.invalid"
+mailto = "root@aborted.invalid"
+timezone = "UTC"
+root-password = "aborted-by-portal-reset"
+reboot-on-error = true
+
+[network]
+source = "from-dhcp"
+
+[disk-setup]
+filesystem = "ext4"
+disk-list = ["portal-reset-no-such-disk"]
+"""
+
+
 @app.post("/api/baremetal/answer")
 async def get_answer_toml(request: Request):
     """Kaldes af Proxmox' auto-installer (HTTP POST med system-info inkl. MAC-adresser)."""
@@ -692,6 +806,10 @@ async def get_answer_toml(request: Request):
     macs = [iface.get("mac", "") for iface in system_info.get("network_interfaces", []) if isinstance(iface, dict)]
     session = load_session()
     node = find_node(session, macs) if session and session.get("mode") == "install" else None
+    if not node and aborted_entry(macs):
+        # Afbrudt af "start forfra": svar der ikke kan installeres (disken findes ikke), så installeren
+        # fejler FØR den skriver noget og genstarter selv (reboot-on-error) - videre til PXE/discovery.
+        return Response(content=ABORT_ANSWER_TOML, media_type="text/plain")
     if not node:
         raise HTTPException(status_code=404, detail=f"Ingen node matcher MAC-adresserne {macs}")
     if node.get("status") not in INSTALLABLE_STATES:
@@ -706,19 +824,21 @@ async def installation_finished(request: Request):
     """Proxmox' post-installation webhook."""
     payload = (await request.body()).decode(errors="replace").lower()
     session = load_session()
-    node = find_node(session, set(MAC_RE.findall(payload))) if session else None
+    # Kun under en installation - en afbrudt node må ikke markeres installeret i en ny discovery.
+    node = find_node(session, set(MAC_RE.findall(payload))) if session and session.get("mode") == "install" else None
     if not node:
         raise HTTPException(status_code=404, detail="Ukendt node")
     update_node(node["mac_address"], status="installed", status_message="Proxmox installeret - første opstart")
+    maybe_stop_pxe()
     return {"status": "ok"}
 
 
 @app.get("/api/baremetal/first-boot.sh")
-def first_boot_script():
+def first_boot_script(request: Request):
+    # Skal også virke efter "start forfra" (ingen session), så afbrudte noder kan rydde op.
     session = load_session()
-    if not session:
-        raise HTTPException(status_code=400, detail="Ingen aktiv PXE-session.")
-    script = (BASE_DIR / "backend" / "templates" / "first-boot.sh").read_text().replace("__PORTAL_URL__", server_url(session))
+    portal_url = server_url(session) if session else f"http://{request.headers.get('host', '').split(':')[0]}:8000"
+    script = (BASE_DIR / "backend" / "templates" / "first-boot.sh").read_text().replace("__PORTAL_URL__", portal_url)
     return Response(content=script, media_type="text/plain")
 
 
@@ -733,6 +853,9 @@ def first_boot_config(mac: str):
 
 @app.post("/api/baremetal/first-boot-done/{mac}")
 def first_boot_done(mac: str, result: FirstBootResult):
+    session = load_session()
+    if not session or session.get("mode") != "install" or aborted_entry([mac]):
+        raise HTTPException(status_code=404, detail="Ukendt node")
     if result.ok:
         node = update_node(mac, status="ready", status_message=result.message or "Klar")
     else:
